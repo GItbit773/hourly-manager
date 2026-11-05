@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Hourly Manager</title>
+  <meta name="theme-color" content="#f4f1ea">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Manager">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="avatar" aria-hidden="true">
+      <svg viewBox="0 0 64 64" width="52" height="52">
+        <circle cx="32" cy="32" r="31" fill="var(--card-2)" stroke="var(--border)"/>
+        <path d="M14 58c3-11 10-16 18-16s15 5 18 16" fill="var(--ink)"/>
+        <path d="M29 42l3 4 3-4-1 12h-4z" fill="var(--red)"/>
+        <circle cx="32" cy="27" r="12" fill="#e9d9c4"/>
+        <path d="M20 24c1-8 6-11 12-11s11 3 12 11c-3-4-7-5-12-5s-9 1-12 5z" fill="var(--text-dim)"/>
+        <path id="brow-l" d="M24 24l6 1.6" stroke="var(--ink)" stroke-width="1.8" stroke-linecap="round"/>
+        <path id="brow-r" d="M40 24l-6 1.6" stroke="var(--ink)" stroke-width="1.8" stroke-linecap="round"/>
+        <circle cx="27.5" cy="28" r="1.4" fill="var(--ink)"/><circle cx="36.5" cy="28" r="1.4" fill="var(--ink)"/>
+        <path id="mouth" d="M28 34h8" stroke="var(--ink)" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+      </svg>
+    </div>
+    <div class="speech">
+      <div class="who"><span id="mgr-name">Gerald</span> <span class="role">· your manager</span></div>
+      <p id="speech">Let's see what you've got today.</p>
+    </div>
+  </header>
+
+  <main id="view"></main>
+
+  <nav class="tabs">
+    <button data-tab="today" class="on">Today</button>
+    <button data-tab="history">History</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+
+  <dialog id="modal"><div id="modal-body"></div></dialog>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
