@@ -3,17 +3,26 @@ const reviewLine = g => (LINES[state.settings.tone] || LINES.micro).review[g];
 
 /* ---------------- state ---------------- */
 const KEY = 'hourly-manager-v1';
-const DEFAULTS = {
-  managerName: 'Gerald', tone: 'micro', start: '09:00', end: '17:00', interval: 60,
-  workdays: [1, 2, 3, 4, 5], sound: true, voice: false,
-};
+const DEFAULTS = { managerName: 'Gerald', tone: 'micro', interval: 60, sound: true, voice: false };
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DOW_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MAX_PRIORITIES = 5;
+/** One plan per weekday (index 0 = Sunday): hours + blocked-out quiet times. */
+const defaultWeek = (old = {}) => DOW.map((_, i) => ({
+  on: (old.workdays || [1, 2, 3, 4, 5]).includes(i), start: old.start || '09:00', end: old.end || '17:00', blocks: [],
+}));
 let state = load();
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY));
-    if (s && s.days) return { settings: { ...DEFAULTS, ...s.settings }, days: s.days };
+    if (s && s.days) {
+      const settings = { ...DEFAULTS, ...s.settings };
+      if (!Array.isArray(settings.week)) settings.week = defaultWeek(s.settings); // migrate v1 settings
+      delete settings.start; delete settings.end; delete settings.workdays;
+      return { settings, days: s.days };
+    }
   } catch {}
-  return { settings: { ...DEFAULTS }, days: {} };
+  return { settings: { ...DEFAULTS, week: defaultWeek() }, days: {} };
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
 const S = () => state.settings;
@@ -28,7 +37,59 @@ function fmt(min) {
   const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
   return `${h}:${pad(m)} ${ap}`;
 }
-const isWorkday = key => S().workdays.includes(new Date(key + 'T12:00').getDay());
+const toHHMM = m => `${pad(Math.floor(m / 60) % 24)}:${pad(Math.round(m) % 60)}`;
+const dow = key => new Date(key + 'T12:00').getDay();
+const clone = o => JSON.parse(JSON.stringify(o));
+/** Past days keep the schedule they were lived with; today follows the live schedule. */
+function plan(key) {
+  const d = state.days[key];
+  return key < dateKey() && d?.plan ? d.plan : S().week[dow(key)];
+}
+const isWorkday = key => !!plan(key)?.on;
+const dayStart = key => toMin(plan(key).start);
+const dayEnd = key => toMin(plan(key).end);
+
+/** Blocked times as [from, to (incl. quiet-after), block], sorted. */
+function quietRanges(p) {
+  return (p?.blocks || []).map(b => {
+    const a = toMin(b.start), e = toMin(b.end);
+    return [a, Math.min(24 * 60, e + Number(b.after || 0)), b, e];
+  }).filter(([a, , , e]) => e > a).sort((x, y) => x[0] - y[0]);
+}
+function mergedQuiet(p) {
+  const out = [];
+  for (const [a, b] of quietRanges(p)) {
+    const last = out.at(-1);
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b); else out.push([a, b]);
+  }
+  return out;
+}
+const quietAt = (key, m) => quietRanges(plan(key)).find(([a, b]) => m >= a && m < b);
+
+/** Check-ins for a plan: every `interval` through free time, one 10 min before each block, none while quiet. */
+function planSlots(p, endedAt = null) {
+  if (!p?.on) return [];
+  const i = Number(S().interval), s = toMin(p.start);
+  let e = toMin(p.end);
+  if (endedAt != null) e = Math.min(e, endedAt);
+  const segs = []; let cur = s;
+  for (const [a, b] of mergedQuiet(p)) {
+    if (b <= cur) continue;
+    if (a >= e) break;
+    if (a > cur) segs.push([cur, a, true]);
+    cur = Math.max(cur, b);
+  }
+  if (cur < e) segs.push([cur, e, false]);
+  const out = [];
+  for (const [a, b, beforeBlock] of segs) {
+    const end = beforeBlock ? b - 10 : b;
+    let last = a;
+    for (let t = a + i; t <= end + 0.01; t += i) { out.push({ t: Math.round(t), from: Math.round(last) }); last = t; }
+    const minGap = endedAt != null && !beforeBlock ? 10 : 15;
+    if (end - last >= minGap) out.push({ t: Math.round(end), from: Math.round(last) });
+  }
+  return out;
+}
 
 function day(key = dateKey()) {
   if (!state.days[key]) state.days[key] = { priorities: [], standupDone: false, entries: {}, nags: {}, breaks: [], snoozeUntil: 0, snoozes: 0, endedAt: null, reviewShown: false };
@@ -39,18 +100,16 @@ const peekDay = key => state.days[key];
 /** Check-in times (minutes since midnight) for a day. */
 function slots(key) {
   const d = peekDay(key) || {};
-  const s = toMin(S().start), e = toMin(S().end), i = Number(S().interval);
-  const stop = d.endedAt != null ? Math.min(e, d.endedAt) : e;
-  const out = [];
-  for (let t = s + i; t <= stop + 0.01; t += i) out.push(t);
-  if (d.endedAt != null && d.endedAt < e && d.endedAt - (out.at(-1) ?? s) >= 10) out.push(Math.round(d.endedAt));
+  const out = planSlots(plan(key), d.endedAt).map(x => x.t);
   // keep any slots already answered even if settings changed
   Object.keys(d.entries || {}).map(Number).forEach(t => { if (!out.includes(t)) out.push(t); });
   return out.sort((a, b) => a - b);
 }
 function slotFrom(key, t) {
+  const hit = planSlots(plan(key), peekDay(key)?.endedAt).find(x => x.t === t);
+  if (hit) return hit.from;
   const list = slots(key); const idx = list.indexOf(t);
-  return idx > 0 ? list[idx - 1] : Math.min(toMin(S().start), t - Number(S().interval));
+  return idx > 0 ? list[idx - 1] : t - Number(S().interval);
 }
 function status(key, t) {
   const d = peekDay(key) || {};
@@ -85,7 +144,7 @@ function stats(key) {
 }
 function dayOver(key = dateKey()) {
   const d = peekDay(key);
-  return key < dateKey() || d?.endedAt != null || nowMin() >= toMin(S().end);
+  return key < dateKey() || d?.endedAt != null || nowMin() >= dayEnd(key);
 }
 
 /* ---------------- manager voice / mood / alerts ---------------- */
@@ -139,18 +198,22 @@ function tick() {
   const key = dateKey();
   if (key !== currentKey) { currentKey = key; render(); }
   if (!isWorkday(key)) { setTitle(0); updateClock(); return; }
-  const d = day(key), now = nowMin(), start = toMin(S().start);
+  const d = day(key), now = nowMin(), start = dayStart(key);
+  d.plan = clone(plan(key));
 
   if (!d.standupDone && now >= start - 30 && !dayOver(key) && !modal.open) openStandup();
 
   const p = pending();
   if (p.length && Date.now() >= d.snoozeUntil) {
-    const t = p.at(-1), age = now - t;
+    const t = p.at(-1);
+    // a blocked time that ended after this check-in was due restarts the clock (no nagging mid-lecture)
+    const base = Math.max(t, ...mergedQuiet(plan(key)).map(([, b]) => b).filter(b => b > t && b <= now));
+    const nk = base === t ? t : `${t}@${base}`, age = now - base;
     const level = age >= 30 ? 3 : age >= 15 ? 2 : age >= 5 ? 1 : 0;
-    const prev = d.nags[t] ?? -1;
+    const prev = d.nags[nk] ?? -1;
     const snoozeEnded = d.snoozeUntil > 0;
-    if (level > prev || snoozeEnded) {
-      d.nags[t] = level; d.snoozeUntil = 0; save();
+    if (!quietAt(key, now) && (level > prev || snoozeEnded)) {
+      d.nags[nk] = level; d.snoozeUntil = 0; save();
       const vars = { range: rangeText(key, t) };
       const line = level === 0 && !snoozeEnded ? say(S().tone, 'prompt', vars) : say(S().tone, 'nag', vars);
       speak(line, level >= 2 ? 'angry' : 'neutral', true);
@@ -240,25 +303,36 @@ function openStandup(edit = false) {
     <form id="su" class="sheet">
       <div class="sheet-head"><span class="pill">Morning stand-up</span></div>
       <h2>${esc(say(S().tone, 'standup'))}</h2>
-      ${[0, 1, 2].map(i => `<input class="field" name="p${i}" placeholder="Priority ${i + 1}" value="${esc(cur[i] || '')}" ${i === 0 ? 'required' : ''}>`).join('')}
+      <div id="su-list">${Array.from({ length: Math.max(3, cur.length) }, (_, i) => priField(i, cur[i])).join('')}</div>
+      <button type="button" class="link" id="su-add" ${cur.length >= MAX_PRIORITIES ? 'hidden' : ''}>+ Add another priority</button>
       <div class="actions">
         ${edit ? '<button type="button" class="ghost" id="su-cancel">Cancel</button>' : '<button type="button" class="ghost" id="su-skip">Skip</button>'}
         <button class="primary">Commit</button>
       </div>
     </form>`, root => {
     $('input', root).focus();
+    $('#su-add', root).addEventListener('click', e => {
+      const list = $('#su-list', root), n = list.children.length;
+      if (n >= MAX_PRIORITIES) return;
+      list.insertAdjacentHTML('beforeend', priField(n)); list.lastElementChild.focus();
+      if (n + 1 >= MAX_PRIORITIES) e.target.hidden = true;
+    });
     $('#su', root).addEventListener('submit', e => {
       e.preventDefault();
-      const texts = [0, 1, 2].map(i => root.querySelector(`[name=p${i}]`).value.trim()).filter(Boolean);
+      const texts = [...root.querySelectorAll('#su-list input')].map(x => x.value.trim()).filter(Boolean).slice(0, MAX_PRIORITIES);
       d.priorities = texts.map(text => ({ text, done: d.priorities.find(p => p.text === text)?.done || false }));
       d.standupDone = true; save(); closeModal();
-      speak(say(S().tone, 'idle', { next: fmt(nextSlot() ?? toMin(S().end)) }), 'neutral'); render(); tick();
+      speak(say(S().tone, 'idle', { next: fmt(nextSlot() ?? dayEnd(dateKey())) }), 'neutral'); render(); tick();
     });
     $('#su-skip', root)?.addEventListener('click', () => {
       d.standupDone = true; save(); closeModal(); speak(say(S().tone, 'standupSkip'), 'angry', true); render(); tick();
     });
     $('#su-cancel', root)?.addEventListener('click', closeModal);
   });
+}
+
+function priField(i, v = '') {
+  return `<input class="field" name="p${i}" placeholder="Priority ${i + 1}${i >= 3 ? ' (optional)' : ''}" value="${esc(v)}" ${i === 0 ? 'required' : ''}>`;
 }
 
 function openBreak() {
@@ -285,20 +359,22 @@ const isStandalone = matchMedia('(display-mode: standalone)').matches || navigat
 
 /** iOS can't run timers for a closed web app, so the reliable nag is a Calendar alarm every check-in. */
 function downloadICS() {
-  const st = S(), i = Number(st.interval), byday = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
-  const days = st.workdays.map(d => byday[d]).join(',');
-  if (!days) return alert('Pick at least one workday first.');
-  const d0 = new Date(); const ymd = `${d0.getFullYear()}${pad(d0.getMonth() + 1)}${pad(d0.getDate())}`;
+  const st = S(), byday = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+  if (!st.week.some(p => p.on)) return alert('Turn on at least one work day first.');
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
   const url = location.origin + location.pathname + '?checkin';
   const ev = [];
-  for (let t = toMin(st.start) + i; t <= toMin(st.end); t += i) {
+  st.week.forEach((p, wd) => {
+    const first = new Date(); first.setDate(first.getDate() + ((wd - first.getDay() + 7) % 7));
+    const ymd = `${first.getFullYear()}${pad(first.getMonth() + 1)}${pad(first.getDate())}`;
+    for (const { t, from } of planSlots(p)) {
     const hm = `${pad(Math.floor(t / 60))}${pad(t % 60)}00`, end = t + 5, hmEnd = `${pad(Math.floor(end / 60) % 24)}${pad(end % 60)}00`;
-    const line = say(st.tone, 'prompt', { range: `from ${fmt(t - i)} to ${fmt(t)}` }).replace(/[,;\\]/g, m => '\\' + m);
-    ev.push(['BEGIN:VEVENT', `UID:hourly-manager-${hm}@local`, `DTSTAMP:${stamp}`, `DTSTART:${ymd}T${hm}`, `DTEND:${ymd}T${hmEnd}`,
-      `RRULE:FREQ=WEEKLY;BYDAY=${days}`, `SUMMARY:${st.managerName}: check-in`, `DESCRIPTION:${line}`, `URL:${url}`,
+    const line = say(st.tone, 'prompt', { range: `from ${fmt(from)} to ${fmt(t)}` }).replace(/[,;\\]/g, m => '\\' + m);
+    ev.push(['BEGIN:VEVENT', `UID:hourly-manager-${wd}-${hm}@local`, `DTSTAMP:${stamp}`, `DTSTART:${ymd}T${hm}`, `DTEND:${ymd}T${hmEnd}`,
+      `RRULE:FREQ=WEEKLY;BYDAY=${byday[wd]}`, `SUMMARY:${st.managerName}: check-in`, `DESCRIPTION:${line}`, `URL:${url}`,
       'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${line}`, 'TRIGGER:PT0M', 'END:VALARM', 'END:VEVENT'].join('\r\n'));
-  }
+    }
+  });
   const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Hourly Manager//EN', 'CALSCALE:GREGORIAN', `X-WR-CALNAME:${st.managerName} check-ins`, ...ev, 'END:VCALENDAR'].join('\r\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([ics], { type: 'text/calendar' }));
@@ -321,17 +397,22 @@ function render() {
 function timeline(key) {
   const d = peekDay(key) || { entries: {}, priorities: [] };
   const rows = slots(key).map(t => {
+    const from = slotFrom(key, t);
     const s = status(key, t), e = d.entries[t];
-    const range = `${fmt(slotFrom(key, t))} – ${fmt(t)}`;
+    const range = `${fmt(from)} – ${fmt(t)}`;
     let body;
     if (s === 'done') body = `<p>${esc(e.text)}</p><div class="meta"><span class="dots">${'●'.repeat(e.rating)}<i>${'●'.repeat(5 - e.rating)}</i></span>${e.priority >= 0 && d.priorities[e.priority] ? `<span class="tag">↳ ${esc(d.priorities[e.priority].text)}</span>` : ''}${e.late >= 5 ? `<span class="tag warn">${e.late}m late</span>` : ''}</div>`;
     else if (s === 'missed') body = `<p class="miss">Unaccounted for</p>`;
     else if (s === 'pending') body = `<p class="miss">Waiting on your report…</p>`;
     else if (s === 'break') body = `<p class="dim">Break</p>`;
     else body = `<p class="dim">Upcoming</p>`;
-    return `<li class="tl ${s}"><span class="t">${range}</span><div>${body}</div></li>`;
+    return { at: from, html: `<li class="tl ${s}"><span class="t">${range}</span><div>${body}</div></li>` };
   });
-  return rows.length ? `<ol class="timeline">${rows.join('')}</ol>` : '<p class="dim">No check-ins scheduled.</p>';
+  if (isWorkday(key)) for (const [a, b, blk, e] of quietRanges(plan(key))) {
+    rows.push({ at: a, html: `<li class="tl block"><span class="t">${fmt(a)} – ${fmt(b)}</span><div><p>${esc(blk.label || 'Blocked')}</p><div class="meta"><span class="tag">no check-ins</span>${b > e ? `<span class="tag">incl. ${b - e}m after</span>` : ''}</div></div></li>` });
+  }
+  rows.sort((x, y) => x.at - y.at);
+  return rows.length ? `<ol class="timeline">${rows.map(r => r.html).join('')}</ol>` : '<p class="dim">No check-ins scheduled.</p>';
 }
 
 function reportCard(key) {
@@ -359,14 +440,16 @@ function viewToday() {
     ? `<section class="card banner"><div><b>${esc(S().managerName)} can't reach you when this tab is hidden.</b><p class="dim">Turn on notifications so the hourly check-ins actually find you.</p></div>${Notification.permission === 'denied' ? '<span class="small dim">Blocked — allow notifications for this site in your browser settings.</span>' : '<button class="primary" id="enable-notif">Enable</button>'}</section>` : '';
   const install = isIOS && !isStandalone
     ? `<section class="card banner"><div><b>Install on your iPhone</b><p class="dim">In Safari tap <b>Share</b> <span aria-hidden="true">⎋</span> → <b>Add to Home Screen</b>. Then open it from the home screen and enable notifications.</p></div></section>` : '';
+  const q = isWorkday(key) ? quietAt(key, now) : null;
+  const quiet = q ? `<p class="quiet">🔕 ${esc(q[2].label || 'Blocked time')} — quiet until ${fmt(q[1])}</p>` : '';
   let status;
   if (!isWorkday(key)) status = `<p class="big">Day off</p><p class="dim">${esc(say(S().tone, 'off'))}</p>`;
-  else if (now < toMin(S().start)) status = `<p class="label">Workday starts</p><p class="big">${fmt(toMin(S().start))}</p><p class="dim">${esc(say(S().tone, 'before', { start: fmt(toMin(S().start)) }))}</p>`;
-  else if (p.length) status = `<p class="label">Overdue</p><p class="big red">${p.length} report${p.length > 1 ? 's' : ''} owed</p><button class="primary wide" id="report">Report in now</button>`;
+  else if (now < dayStart(key)) status = `<p class="label">Workday starts</p><p class="big">${fmt(dayStart(key))}</p><p class="dim">${esc(say(S().tone, 'before', { start: fmt(dayStart(key)) }))}</p>`;
+  else if (p.length) status = `${quiet}<p class="label">Overdue</p><p class="big red">${p.length} report${p.length > 1 ? 's' : ''} owed</p><button class="primary wide" id="report">Report in now</button>`;
   else if (dayOver(key)) status = `<p class="label">Clocked out</p><p class="big">See you tomorrow</p>`;
   else {
     const n = nextSlot();
-    status = `<p class="label">Next check-in at ${fmt(n)}</p><p class="big mono" id="countdown">--:--</p>
+    status = `${quiet}<p class="label">${n != null ? `Next check-in at ${fmt(n)}` : 'No more check-ins today'}</p><p class="big mono" id="countdown">--:--</p>
       <div class="row"><button class="ghost" id="break">Take a break</button><button class="ghost" id="clockout">Clock out</button></div>`;
   }
   const pri = isWorkday(key) ? `<section class="card">
@@ -381,7 +464,7 @@ function viewToday() {
 }
 
 function viewHistory() {
-  const keys = Object.keys(state.days).filter(k => k < dateKey() && isWorkday(k) || (k < dateKey() && Object.keys(state.days[k].entries).length)).sort().reverse();
+  const keys = Object.keys(state.days).filter(k => k < dateKey() && (isWorkday(k) || Object.keys(state.days[k].entries).length)).sort().reverse();
   if (!keys.length) return `<section class="card"><h3>History</h3><p class="dim">No past days yet. Survive today first.</p></section>`;
   const week = keys.slice(0, 7).map(k => ({ k, s: stats(k) })).reverse();
   const bars = `<div class="bars">${week.map(({ k, s }) => `<div class="bar"><div class="fill g-${s.grade}" style="height:${Math.max(4, s.acc * 100)}%"></div><span>${new Date(k + 'T12:00').toLocaleDateString(undefined, { weekday: 'narrow' })}</span></div>`).join('')}</div>`;
@@ -394,7 +477,6 @@ function viewHistory() {
 
 function viewSettings() {
   const s = S();
-  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   return `<section class="card form">
     <h3>Your manager</h3>
     <label>Name<input class="field" id="s-name" value="${esc(s.managerName)}"></label>
@@ -402,18 +484,17 @@ function viewSettings() {
     <label class="tog"><input type="checkbox" id="s-sound" ${s.sound ? 'checked' : ''}> Chime when checking in</label>
     <label class="tog"><input type="checkbox" id="s-voice" ${s.voice ? 'checked' : ''}> Say it out loud</label>
   </section>
-  <section class="card form">
-    <h3>Work hours</h3>
-    <div class="two"><label>Start<input class="field" type="time" id="s-start" value="${s.start}"></label><label>End<input class="field" type="time" id="s-end" value="${s.end}"></label></div>
+  <section class="card form" id="s-week">
+    <h3>Weekly schedule</h3>
+    <p class="dim small">Give each day its own hours, then block out times like lectures, travel or anything else. ${esc(s.managerName)} stays completely quiet during a block and its “quiet after” buffer, checks in 10 min before it starts, and restarts the clock once it ends.</p>
     <label>Check in every<select class="field" id="s-int">${[30, 45, 60, 90, 120].map(m => `<option value="${m}" ${m == s.interval ? 'selected' : ''}>${m < 60 ? m + ' minutes' : m / 60 + ' hour' + (m > 60 ? 's' : '')}</option>`).join('')}</select></label>
-    <label>Workdays</label>
-    <div class="chips" id="s-days">${days.map((n, i) => `<button type="button" data-d="${i}" class="${s.workdays.includes(i) ? 'sel' : ''}">${n}</button>`).join('')}</div>
+    <div class="week">${[1, 2, 3, 4, 5, 6, 0].map(dayEditor).join('')}</div>
   </section>
   <section class="card form">
     <h3>Phone alarms</h3>
     <p class="dim small">iPhones pause web apps in the background, so ${esc(s.managerName)} can't nudge you while the app is closed. Add a Calendar alarm for every check-in — tapping it brings you back here.</p>
     <div class="row left"><button class="primary" id="s-ics">Add check-ins to Calendar</button></div>
-    <p class="dim small">Changed your hours? Delete the old “${esc(s.managerName)}: check-in” events and add them again.</p>
+    <p class="dim small">Changed your schedule? Delete the old “${esc(s.managerName)}: check-in” events and add them again.</p>
   </section>
   <section class="card form">
     <h3>Data</h3>
@@ -423,7 +504,89 @@ function viewSettings() {
   </section>`;
 }
 
+const openDays = new Set([new Date().getDay()]);
+const AFTER = [0, 15, 30, 45, 60, 90, 120];
+function dayEditor(i) {
+  const p = S().week[i], sl = planSlots(p), nb = p.blocks.length;
+  const summary = p.on ? `${fmt(toMin(p.start))} – ${fmt(toMin(p.end))} · ${nb ? nb + ' block' + (nb > 1 ? 's' : '') + ' · ' : ''}${sl.length} check-in${sl.length === 1 ? '' : 's'}` : 'Day off';
+  return `<details class="wk ${p.on ? '' : 'off'}" data-day="${i}" ${openDays.has(i) ? 'open' : ''}>
+    <summary><b>${DOW_LONG[i]}</b><span>${summary}</span></summary>
+    <div class="wk-body">
+      <label class="tog"><input type="checkbox" data-f="on" ${p.on ? 'checked' : ''}> Work day</label>
+      ${p.on ? `
+      <div class="two"><label>Start<input class="field" type="time" data-f="start" value="${p.start}"></label><label>End<input class="field" type="time" data-f="end" value="${p.end}"></label></div>
+      ${p.blocks.map((b, j) => `<div class="blk" data-j="${j}">
+        <div class="blk-head"><input class="field" data-b="label" value="${esc(b.label)}" placeholder="What is it? e.g. Lecture"><button type="button" class="x" data-act="del" aria-label="Remove block">✕</button></div>
+        <div class="three">
+          <label>From<input class="field" type="time" data-b="start" value="${b.start}"></label>
+          <label>To<input class="field" type="time" data-b="end" value="${b.end}"></label>
+          <label>Quiet after<select class="field" data-b="after">${AFTER.map(m => `<option value="${m}" ${m == b.after ? 'selected' : ''}>${m ? (m < 60 ? m + ' min' : m / 60 + ' hr') : 'none'}</option>`).join('')}</select></label>
+        </div>
+        ${toMin(b.end) <= toMin(b.start) ? '<p class="small red">End time must be after the start time.</p>' : ''}
+      </div>`).join('')}
+      <div class="row left"><button type="button" class="ghost" data-act="add">+ Block out time</button><button type="button" class="ghost" data-act="copy">Copy to other days…</button></div>
+      <p class="dim small slots-preview"><b>Check-ins:</b> ${sl.length ? sl.map(x => fmt(x.t)).join(' · ') : 'none'}</p>` : ''}
+    </div>
+  </details>`;
+}
+
+function openCopy(from) {
+  showModal(`
+    <div class="sheet">
+      <div class="sheet-head"><span class="pill">Copy ${DOW_LONG[from]}</span></div>
+      <h2>Copy ${DOW_LONG[from]}'s hours and blocks to…</h2>
+      <div class="chips big" id="cp">${[1, 2, 3, 4, 5, 6, 0].filter(i => i !== from).map(i => `<button type="button" data-d="${i}">${DOW[i]}</button>`).join('')}</div>
+      <p class="dim small">This replaces the schedule on the days you pick.</p>
+      <div class="actions"><button type="button" class="ghost" id="cp-cancel">Cancel</button><button type="button" class="primary" id="cp-go">Copy</button></div>
+    </div>`, root => {
+    const picked = new Set();
+    $('#cp', root).addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      const d = Number(b.dataset.d); picked.has(d) ? picked.delete(d) : picked.add(d); b.classList.toggle('sel');
+    });
+    $('#cp-cancel', root).addEventListener('click', closeModal);
+    $('#cp-go', root).addEventListener('click', () => {
+      picked.forEach(d => { S().week[d] = clone(S().week[from]); openDays.add(d); });
+      save(); closeModal(); render();
+    });
+  });
+}
+
+function bindWeek() {
+  const box = $('#s-week'); if (!box) return;
+  box.querySelectorAll('details.wk').forEach(el => el.addEventListener('toggle', () => {
+    const i = Number(el.dataset.day); el.open ? openDays.add(i) : openDays.delete(i);
+  }));
+  box.addEventListener('change', e => {
+    const el = e.target, wk = el.closest('.wk'); if (!wk) return;
+    const p = S().week[wk.dataset.day];
+    if (el.dataset.f === 'on') p.on = el.checked;
+    else if (el.dataset.f && el.value) p[el.dataset.f] = el.value;
+    else if (el.dataset.b) {
+      const b = p.blocks[el.closest('.blk').dataset.j];
+      if (el.dataset.b === 'after') b.after = Number(el.value);
+      else if (el.dataset.b === 'label') b.label = el.value.trim();
+      else if (el.value) b[el.dataset.b] = el.value;
+      p.blocks.sort((x, y) => toMin(x.start) - toMin(y.start));
+    } else return;
+    save(); render();
+  });
+  box.addEventListener('click', e => {
+    const btn = e.target.closest('[data-act]'); if (!btn) return;
+    const i = Number(btn.closest('.wk').dataset.day), p = S().week[i];
+    if (btn.dataset.act === 'add') {
+      const last = p.blocks.at(-1);
+      const a = Math.min(last ? toMin(last.end) + 60 : toMin(p.start) + 60, 23 * 60);
+      p.blocks.push({ label: '', start: toHHMM(a), end: toHHMM(Math.min(a + 120, 23 * 60 + 59)), after: 30 });
+    } else if (btn.dataset.act === 'del') {
+      p.blocks.splice(Number(btn.closest('.blk').dataset.j), 1);
+    } else if (btn.dataset.act === 'copy') return openCopy(i);
+    save(); render();
+  });
+}
+
 function bindView() {
+  bindWeek();
   const on = (id, ev, fn) => $(id)?.addEventListener(ev, fn);
   on('#enable-notif', 'click', async () => { await Notification.requestPermission(); render(); });
   on('#report', 'click', openCheckin);
@@ -441,17 +604,10 @@ function bindView() {
   // settings
   const set = (k, v) => { S()[k] = v; save(); };
   on('#s-name', 'change', e => { set('managerName', e.target.value.trim() || 'Gerald'); render(); });
-  on('#s-tone', 'change', e => { set('tone', e.target.value); speak(say(S().tone, 'idle', { next: fmt(nextSlot() ?? toMin(S().end)) }), 'neutral', true); });
+  on('#s-tone', 'change', e => { set('tone', e.target.value); speak(say(S().tone, 'idle', { next: fmt(nextSlot() ?? dayEnd(dateKey())) }), 'neutral', true); });
   on('#s-sound', 'change', e => set('sound', e.target.checked));
   on('#s-voice', 'change', e => set('voice', e.target.checked));
-  on('#s-start', 'change', e => e.target.value && set('start', e.target.value));
-  on('#s-end', 'change', e => e.target.value && set('end', e.target.value));
-  on('#s-int', 'change', e => set('interval', Number(e.target.value)));
-  on('#s-days', 'click', e => {
-    const b = e.target.closest('button'); if (!b) return;
-    const i = Number(b.dataset.d), w = new Set(S().workdays);
-    w.has(i) ? w.delete(i) : w.add(i); set('workdays', [...w].sort()); render();
-  });
+  on('#s-int', 'change', e => { set('interval', Number(e.target.value)); render(); });
   on('#s-test', 'click', async () => {
     unlockAudio();
     if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
@@ -466,7 +622,7 @@ function bindView() {
   });
   on('#s-reset', 'click', () => {
     if (!confirm('Erase all check-ins and settings? This cannot be undone.')) return;
-    state = { settings: { ...DEFAULTS }, days: {} }; save(); render();
+    state = { settings: { ...DEFAULTS, week: defaultWeek() }, days: {} }; save(); render();
   });
 }
 

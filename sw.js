@@ -1,5 +1,5 @@
 // Offline cache + notification click handling. Bump CACHE when files change.
-const CACHE = 'hourly-manager-v3';
+const CACHE = 'hourly-manager-v4';
 const FILES = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/lines.js', 'icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', e => {

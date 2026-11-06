@@ -1,6 +1,9 @@
 # Hourly Manager
 
-An overbearing manager that asks every hour what you did. Vanilla JS PWA, no build step; all data stays on the device (localStorage).
+An overbearing manager that asks every hour what you did.
+
+- Up to 5 daily priorities in the morning stand-up.
+- Weekly schedule: each weekday has its own hours and **blocked times** (lectures, travel…) with an optional *quiet after* buffer. No check-ins or reminders during a block; one check-in 10 min before it starts; the interval restarts when it ends. Vanilla JS PWA, no build step; all data stays on the device (localStorage).
 
 ## Run locally (Mac)
     python3 tools/serve.py 4180   → http://127.0.0.1:4180
@@ -18,4 +21,4 @@ Then on the iPhone:
 ### Why the Calendar alarms?
 iOS freezes web apps in the background, so the in-app hourly timer only fires while the app is open.
 The Calendar events ring at every check-in even when the app is closed; tapping one opens the check-in.
-Re-add them (after deleting the old ones) if you change your hours.
+Re-add them (after deleting the old ones) whenever you change your schedule.
