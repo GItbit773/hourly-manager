@@ -3,7 +3,7 @@ const reviewLine = g => (LINES[state.settings.tone] || LINES.micro).review[g];
 
 /* ---------------- state ---------------- */
 const KEY = 'hourly-manager-v1';
-const DEFAULTS = { managerName: 'Gerald', tone: 'micro', interval: 60, sound: true, voice: false };
+const DEFAULTS = { managerName: 'Gerald', tone: 'micro', interval: 60, sound: true, voice: false, morningOn: true, morning: '07:00' };
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DOW_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MAX_PRIORITIES = 5;
@@ -134,13 +134,13 @@ function stats(key) {
   const onPri = done.filter(e => e.priority >= 0).length;
   const late = done.length ? done.reduce((a, e) => a + (e.late || 0), 0) / done.length : 0;
   const acc = counted ? done.length / counted : 0;
-  const snoozes = peekDay(key)?.snoozes || 0;
   let grade = null;
   if (counted) {
-    const score = 0.6 * acc + 0.4 * (avg ? (avg - 1) / 4 : 0) - Math.min(0.15, snoozes * 0.03) - Math.min(0.1, late / 300);
+    const score = 0.6 * acc + 0.4 * (avg ? (avg - 1) / 4 : 0) - Math.min(0.1, late / 300);
     grade = score >= 0.85 ? 'A' : score >= 0.7 ? 'B' : score >= 0.55 ? 'C' : score >= 0.4 ? 'D' : 'F';
   }
-  return { counted, done: done.length, missed, avg, onPri, late, acc, grade, snoozes };
+  const pri = peekDay(key)?.priorities || [];
+  return { counted, done: done.length, missed, avg, onPri, late, acc, grade, priDone: pri.filter(p => p.done).length, priTotal: pri.length };
 }
 function dayOver(key = dateKey()) {
   const d = peekDay(key);
@@ -180,10 +180,10 @@ function beep(level = 0) {
     o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 0.17);
   });
 }
-async function notify(body, level = 0) {
+async function notify(body, level = 0, title0 = null) {
   beep(level);
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const title = `${S().managerName} wants an update` + (level >= 2 ? '!!' : '');
+  const title = title0 || `${S().managerName} wants an update` + (level >= 2 ? '!!' : '');
   const opts = { body, tag: 'checkin', renotify: true, requireInteraction: true, icon: 'icon.svg' };
   try {
     const reg = await navigator.serviceWorker?.getRegistration();
@@ -197,25 +197,32 @@ let currentKey = dateKey();
 function tick() {
   const key = dateKey();
   if (key !== currentKey) { currentKey = key; render(); }
+  const d = day(key), now = nowMin();
+  const mt = toMin(S().morning || '07:00');
+  if (S().morningOn && !d.morningPinged && now >= mt && now < mt + 240) {
+    d.morningPinged = true; save();
+    const line = say(S().tone, 'morning');
+    speak(line, 'neutral', true); notify(line, 0, "Time to set today's priorities");
+    if (!modal.open) openStandup(d.standupDone);
+  }
   if (!isWorkday(key)) { setTitle(0); updateClock(); return; }
-  const d = day(key), now = nowMin(), start = dayStart(key);
+  const start = dayStart(key);
   d.plan = clone(plan(key));
 
   if (!d.standupDone && now >= start - 30 && !dayOver(key) && !modal.open) openStandup();
 
   const p = pending();
-  if (p.length && Date.now() >= d.snoozeUntil) {
+  if (p.length) {
     const t = p.at(-1);
     // a blocked time that ended after this check-in was due restarts the clock (no nagging mid-lecture)
     const base = Math.max(t, ...mergedQuiet(plan(key)).map(([, b]) => b).filter(b => b > t && b <= now));
     const nk = base === t ? t : `${t}@${base}`, age = now - base;
     const level = age >= 30 ? 3 : age >= 15 ? 2 : age >= 5 ? 1 : 0;
     const prev = d.nags[nk] ?? -1;
-    const snoozeEnded = d.snoozeUntil > 0;
-    if (!quietAt(key, now) && (level > prev || snoozeEnded)) {
-      d.nags[nk] = level; d.snoozeUntil = 0; save();
+    if (!quietAt(key, now) && level > prev) {
+      d.nags[nk] = level; save();
       const vars = { range: rangeText(key, t) };
-      const line = level === 0 && !snoozeEnded ? say(S().tone, 'prompt', vars) : say(S().tone, 'nag', vars);
+      const line = level === 0 ? say(S().tone, 'prompt', vars) : say(S().tone, 'nag', vars);
       speak(line, level >= 2 ? 'angry' : 'neutral', true);
       notify(line, level);
       if (!modal.open) openCheckin();
@@ -231,7 +238,7 @@ function tick() {
   setTitle(p.length);
   updateClock();
 }
-function setTitle(n) { document.title = n ? `(${n}) Report in — Hourly Manager` : 'Hourly Manager'; }
+function setTitle(n) { document.title = n ? `(${n}) Report in — Time Keeper` : 'Time Keeper'; }
 
 /* ---------------- modals ---------------- */
 const modal = $('#modal');
@@ -263,7 +270,6 @@ function openCheckin() {
       ${pri}
       <div class="actions">
         <button type="button" class="ghost" id="ci-off">Write it off</button>
-        ${p.length === 1 ? '<button type="button" class="ghost" id="ci-snooze">Snooze 10m</button>' : ''}
         <button class="primary">Report in</button>
       </div>
     </form>`, root => {
@@ -288,10 +294,6 @@ function openCheckin() {
       d.entries[t] = { status: 'missed', at: Date.now() }; save();
       speak(say(S().tone, 'writeoff'), 'angry', true); after();
     });
-    $('#ci-snooze', root)?.addEventListener('click', () => {
-      d.snoozeUntil = Date.now() + 10 * 60e3; d.snoozes++; save();
-      speak(say(S().tone, 'snooze'), 'angry', true); closeModal(); render();
-    });
   });
   function after() { if (pending().length) openCheckin(); else closeModal(); render(); }
 }
@@ -302,7 +304,7 @@ function openStandup(edit = false) {
   showModal(`
     <form id="su" class="sheet">
       <div class="sheet-head"><span class="pill">Morning stand-up</span></div>
-      <h2>${esc(say(S().tone, 'standup'))}</h2>
+      <h2>${esc(say(S().tone, !edit && cur.length && !d.standupDone ? 'planned' : 'standup'))}</h2>
       <div id="su-list">${Array.from({ length: Math.max(3, cur.length) }, (_, i) => priField(i, cur[i])).join('')}</div>
       <button type="button" class="link" id="su-add" ${cur.length >= MAX_PRIORITIES ? 'hidden' : ''}>+ Add another priority</button>
       <div class="actions">
@@ -331,8 +333,8 @@ function openStandup(edit = false) {
   });
 }
 
-function priField(i, v = '') {
-  return `<input class="field" name="p${i}" placeholder="Priority ${i + 1}${i >= 3 ? ' (optional)' : ''}" value="${esc(v)}" ${i === 0 ? 'required' : ''}>`;
+function priField(i, v = '', firstRequired = true) {
+  return `<input class="field" name="p${i}" placeholder="Priority ${i + 1}${i >= 3 ? ' (optional)' : ''}" value="${esc(v || '')}" ${i === 0 && firstRequired ? 'required' : ''}>`;
 }
 
 function openBreak() {
@@ -375,10 +377,18 @@ function downloadICS() {
       'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${line}`, 'TRIGGER:PT0M', 'END:VALARM', 'END:VEVENT'].join('\r\n'));
     }
   });
-  const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Hourly Manager//EN', 'CALSCALE:GREGORIAN', `X-WR-CALNAME:${st.managerName} check-ins`, ...ev, 'END:VCALENDAR'].join('\r\n');
+  if (st.morningOn) {
+    const d0 = new Date(), ymd = `${d0.getFullYear()}${pad(d0.getMonth() + 1)}${pad(d0.getDate())}`, mt = toMin(st.morning);
+    const hm = `${pad(Math.floor(mt / 60))}${pad(mt % 60)}00`, hmEnd = `${pad(Math.floor((mt + 5) / 60))}${pad((mt + 5) % 60)}00`;
+    const line = say(st.tone, 'morning').replace(/[,;\\]/g, m => '\\' + m);
+    ev.push(['BEGIN:VEVENT', 'UID:time-keeper-morning@local', `DTSTAMP:${stamp}`, `DTSTART:${ymd}T${hm}`, `DTEND:${ymd}T${hmEnd}`,
+      'RRULE:FREQ=DAILY', `SUMMARY:${st.managerName}: set today's priorities`, `DESCRIPTION:${line}`, `URL:${location.origin + location.pathname}?priorities`,
+      'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${line}`, 'TRIGGER:PT0M', 'END:VALARM', 'END:VEVENT'].join('\r\n'));
+  }
+  const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Time Keeper//EN', 'CALSCALE:GREGORIAN', `X-WR-CALNAME:${st.managerName} check-ins`, ...ev, 'END:VCALENDAR'].join('\r\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([ics], { type: 'text/calendar' }));
-  a.download = 'hourly-manager-checkins.ics'; document.body.appendChild(a); a.click(); a.remove();
+  a.download = 'time-keeper-checkins.ics'; document.body.appendChild(a); a.click(); a.remove();
 }
 
 /* ---------------- views ---------------- */
@@ -428,7 +438,7 @@ function reportCard(key) {
         <div><b>${s.done}/${s.counted}</b><span>hours accounted</span></div>
         <div><b>${s.avg ? s.avg.toFixed(1) : '–'}</b><span>avg productivity</span></div>
         <div><b>${s.done ? Math.round(s.onPri / s.done * 100) + '%' : '–'}</b><span>on priorities</span></div>
-        <div><b>${s.snoozes}</b><span>snoozes</span></div>
+        <div><b>${s.priTotal ? s.priDone + '/' + s.priTotal : '–'}</b><span>priorities done</span></div>
       </div>
     </div>
   </section>`;
@@ -452,10 +462,12 @@ function viewToday() {
     status = `${quiet}<p class="label">${n != null ? `Next check-in at ${fmt(n)}` : 'No more check-ins today'}</p><p class="big mono" id="countdown">--:--</p>
       <div class="row"><button class="ghost" id="break">Take a break</button><button class="ghost" id="clockout">Clock out</button></div>`;
   }
-  const pri = isWorkday(key) ? `<section class="card">
-      <div class="card-head"><h3>Today's priorities</h3><button class="link" id="edit-pri">${d.priorities.length ? 'Edit' : 'Set'}</button></div>
-      ${d.priorities.length ? `<ul class="pri">${d.priorities.map((x, i) => `<li><label><input type="checkbox" data-i="${i}" ${x.done ? 'checked' : ''}><span>${esc(x.text)}</span></label></li>`).join('')}</ul>` : '<p class="dim">None set. Your manager has noticed.</p>'}
-    </section>` : '';
+  const ahead = plannedAhead();
+  const pri = `<section class="card">
+      <div class="card-head"><h3>Today's priorities</h3><div class="hdr-btns"><button class="link" id="plan-ahead">📅 Plan ahead</button><button class="link" id="edit-pri">${d.priorities.length ? 'Edit' : 'Set'}</button></div></div>
+      ${d.priorities.length ? `<ul class="pri">${d.priorities.map((x, i) => `<li><label><input type="checkbox" data-i="${i}" ${x.done ? 'checked' : ''}><span>${esc(x.text)}</span></label></li>`).join('')}</ul>` : `<p class="dim">None set. ${esc(S().managerName)} has noticed.</p>`}
+      ${ahead.length ? `<div class="ahead"><span class="dim small">Planned ahead:</span>${ahead.slice(0, 6).map(k => `<button class="tag" data-k="${k}">${niceDate(k)} · ${state.days[k].priorities.length}</button>`).join('')}</div>` : ''}
+    </section>`;
   return `${install}${notif}
     <section class="card status">${status}</section>
     ${dayOver(key) && isWorkday(key) ? reportCard(key) : ''}
@@ -478,21 +490,18 @@ function viewHistory() {
 function viewSettings() {
   const s = S();
   return `<section class="card form">
-    <h3>Your manager</h3>
+    <h3>Your time keeper</h3>
     <label>Name<input class="field" id="s-name" value="${esc(s.managerName)}"></label>
-    <label>Management style<select class="field" id="s-tone">${Object.entries(TONES).map(([k, v]) => `<option value="${k}" ${k === s.tone ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <label>Personality</label>
+    <div class="tones" id="s-tone">${Object.entries(TONES).map(([k, [name, desc]]) => `<button type="button" data-t="${k}" class="${k === s.tone ? 'sel' : ''}"><b>${name}</b><span>${desc}</span></button>`).join('')}</div>
+    <div class="tog-row"><label class="tog"><input type="checkbox" id="s-morning-on" ${s.morningOn ? 'checked' : ''}> Daily reminder to set priorities at</label><input class="field inline" type="time" id="s-morning" value="${s.morning}"></div>
     <label class="tog"><input type="checkbox" id="s-sound" ${s.sound ? 'checked' : ''}> Chime when checking in</label>
     <label class="tog"><input type="checkbox" id="s-voice" ${s.voice ? 'checked' : ''}> Say it out loud</label>
   </section>
-  <section class="card form" id="s-week">
-    <h3>Weekly schedule</h3>
-    <p class="dim small">Give each day its own hours, then block out times like lectures, travel or anything else. ${esc(s.managerName)} stays completely quiet during a block and its “quiet after” buffer, checks in 10 min before it starts, and restarts the clock once it ends.</p>
-    <label>Check in every<select class="field" id="s-int">${[30, 45, 60, 90, 120].map(m => `<option value="${m}" ${m == s.interval ? 'selected' : ''}>${m < 60 ? m + ' minutes' : m / 60 + ' hour' + (m > 60 ? 's' : '')}</option>`).join('')}</select></label>
-    <div class="week">${[1, 2, 3, 4, 5, 6, 0].map(dayEditor).join('')}</div>
-  </section>
+  ${scheduleSection(s)}
   <section class="card form">
     <h3>Phone alarms</h3>
-    <p class="dim small">iPhones pause web apps in the background, so ${esc(s.managerName)} can't nudge you while the app is closed. Add a Calendar alarm for every check-in — tapping it brings you back here.</p>
+    <p class="dim small">iPhones pause web apps in the background, so ${esc(s.managerName)} can't nudge you while the app is closed. Add a Calendar alarm for every check-in (and the daily priorities reminder) — tapping it brings you back here.</p>
     <div class="row left"><button class="primary" id="s-ics">Add check-ins to Calendar</button></div>
     <p class="dim small">Changed your schedule? Delete the old “${esc(s.managerName)}: check-in” events and add them again.</p>
   </section>
@@ -504,30 +513,158 @@ function viewSettings() {
   </section>`;
 }
 
-const openDays = new Set([new Date().getDay()]);
+/* ---------------- schedule calendar (drag to block out time) ---------------- */
+const HOUR_PX = 44, SNAP = 15, LAST_MIN = 23 * 60 + 59;
 const AFTER = [0, 15, 30, 45, 60, 90, 120];
-function dayEditor(i) {
-  const p = S().week[i], sl = planSlots(p), nb = p.blocks.length;
-  const summary = p.on ? `${fmt(toMin(p.start))} – ${fmt(toMin(p.end))} · ${nb ? nb + ' block' + (nb > 1 ? 's' : '') + ' · ' : ''}${sl.length} check-in${sl.length === 1 ? '' : 's'}` : 'Day off';
-  return `<details class="wk ${p.on ? '' : 'off'}" data-day="${i}" ${openDays.has(i) ? 'open' : ''}>
-    <summary><b>${DOW_LONG[i]}</b><span>${summary}</span></summary>
-    <div class="wk-body">
-      <label class="tog"><input type="checkbox" data-f="on" ${p.on ? 'checked' : ''}> Work day</label>
-      ${p.on ? `
-      <div class="two"><label>Start<input class="field" type="time" data-f="start" value="${p.start}"></label><label>End<input class="field" type="time" data-f="end" value="${p.end}"></label></div>
-      ${p.blocks.map((b, j) => `<div class="blk" data-j="${j}">
-        <div class="blk-head"><input class="field" data-b="label" value="${esc(b.label)}" placeholder="What is it? e.g. Lecture"><button type="button" class="x" data-act="del" aria-label="Remove block">✕</button></div>
-        <div class="three">
-          <label>From<input class="field" type="time" data-b="start" value="${b.start}"></label>
-          <label>To<input class="field" type="time" data-b="end" value="${b.end}"></label>
-          <label>Quiet after<select class="field" data-b="after">${AFTER.map(m => `<option value="${m}" ${m == b.after ? 'selected' : ''}>${m ? (m < 60 ? m + ' min' : m / 60 + ' hr') : 'none'}</option>`).join('')}</select></label>
-        </div>
-        ${toMin(b.end) <= toMin(b.start) ? '<p class="small red">End time must be after the start time.</p>' : ''}
-      </div>`).join('')}
-      <div class="row left"><button type="button" class="ghost" data-act="add">+ Block out time</button><button type="button" class="ghost" data-act="copy">Copy to other days…</button></div>
-      <p class="dim small slots-preview"><b>Check-ins:</b> ${sl.length ? sl.map(x => fmt(x.t)).join(' · ') : 'none'}</p>` : ''}
-    </div>
-  </details>`;
+let calDay = new Date().getDay(), calScroll = null;
+const ypx = m => m / 60 * HOUR_PX;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function fmtShort(hhmm) {
+  const m = toMin(hhmm), h = Math.floor(m / 60), mm = m % 60;
+  return `${h % 12 || 12}${mm ? ':' + pad(mm) : ''}${h < 12 ? 'a' : 'p'}`;
+}
+
+function scheduleSection(s) {
+  const p = S().week[calDay], sl = planSlots(p);
+  return `<section class="card form" id="s-week">
+    <h3>Weekly schedule</h3>
+    <p class="dim small"><b>Tap or drag</b> on the calendar to block out time (lectures, travel…) — no check-ins happen during a block. Drag a block to move it, drag its bottom edge to resize, tap it to rename or delete. Drag the <b>Start</b> / <b>End</b> bars to set your day.</p>
+    <div class="wk-strip">${[1, 2, 3, 4, 5, 6, 0].map(i => {
+      const w = S().week[i];
+      return `<button type="button" data-d="${i}" class="${i === calDay ? 'sel' : ''} ${w.on ? '' : 'off'}"><b>${DOW[i]}</b><span>${w.on ? fmtShort(w.start) + '–' + fmtShort(w.end) : 'off'}</span>${w.on && w.blocks.length ? `<i>${w.blocks.length}</i>` : ''}</button>`;
+    }).join('')}</div>
+    <div class="cal-bar"><label class="tog"><input type="checkbox" id="cal-on" ${p.on ? 'checked' : ''}> Work day</label><button type="button" class="link" id="cal-copy">Copy ${DOW_LONG[calDay]} to other days…</button></div>
+    <div class="cal" id="cal"><div class="cal-grid" id="cal-grid" style="height:${ypx(24 * 60)}px">${calInner(calDay)}</div></div>
+    <p class="dim small slots-preview"><b>🔔 ${DOW_LONG[calDay]} check-ins:</b> ${p.on ? (sl.length ? sl.map(x => fmt(x.t)).join(' · ') : 'none') : 'day off'}</p>
+    <label>Check in every<select class="field" id="s-int">${[30, 45, 60, 90, 120].map(m => `<option value="${m}" ${m == s.interval ? 'selected' : ''}>${m < 60 ? m + ' minutes' : m / 60 + ' hour' + (m > 60 ? 's' : '')}</option>`).join('')}</select></label>
+  </section>`;
+}
+
+function calInner(i) {
+  const p = S().week[i], out = [];
+  for (let h = 0; h < 24; h++) out.push(`<div class="cal-h" style="top:${ypx(h * 60)}px"><span>${h ? fmtShort(toHHMM(h * 60)) : ''}</span></div>`);
+  if (!p.on) return out.join('') + `<div class="cal-off all"><span>Day off — tick “Work day” to plan it</span></div>`;
+  const s = toMin(p.start), e = toMin(p.end);
+  out.push(`<div class="cal-off" style="top:0;height:${ypx(s)}px"></div><div class="cal-off" style="top:${ypx(e)}px;height:${ypx(24 * 60 - e)}px"></div>`);
+  planSlots(p).forEach(x => out.push(`<div class="cal-slot" style="top:${ypx(x.t)}px"><span>🔔 ${fmt(x.t)}</span></div>`));
+  p.blocks.forEach((b, j) => {
+    const a = toMin(b.start), z = toMin(b.end), af = Number(b.after || 0);
+    if (af) out.push(`<div class="ev-after" style="top:${ypx(z)}px;height:${ypx(Math.min(af, 24 * 60 - z))}px"><span>quiet ${af} min</span></div>`);
+    out.push(`<div class="ev ${z - a < 45 ? 'short' : ''}" data-j="${j}" style="top:${ypx(a)}px;height:${Math.max(ypx(z - a), 14)}px"><b>${esc(b.label || 'Busy')}</b><span>${fmt(a)} – ${fmt(z)}</span><i class="ev-resize" data-j="${j}"></i></div>`);
+  });
+  out.push(`<div class="hnd" data-h="start" style="top:${ypx(s)}px"><span>Start ${fmt(s)}</span></div><div class="hnd" data-h="end" style="top:${ypx(e)}px"><span>End ${fmt(e)}</span></div>`);
+  return out.join('');
+}
+
+function bindCal() {
+  const grid = $('#cal-grid'), cal = $('#cal'); if (!grid) return;
+  const p = S().week[calDay];
+  cal.scrollTop = calScroll ?? ypx(Math.max(0, (p.on ? toMin(p.start) : 8 * 60) - 60));
+  cal.addEventListener('scroll', () => { calScroll = cal.scrollTop; }, { passive: true });
+  const rawAt = y => (y - grid.getBoundingClientRect().top) / HOUR_PX * 60;
+  const minAt = y => clamp(Math.round(rawAt(y) / SNAP) * SNAP, 0, 24 * 60);
+  const redraw = () => { grid.innerHTML = calInner(calDay); };
+  let drag = null;
+
+  grid.addEventListener('pointerdown', e => {
+    const rz = e.target.closest('.ev-resize'), ev = e.target.closest('.ev'), h = e.target.closest('.hnd'), m = minAt(e.clientY);
+    if (rz) drag = { mode: 'resize', j: +rz.dataset.j };
+    else if (ev) { const b = p.blocks[+ev.dataset.j]; drag = { mode: 'move', j: +ev.dataset.j, r0: rawAt(e.clientY), a0: toMin(b.start), z0: toMin(b.end) }; }
+    else if (h) drag = { mode: 'hours', which: h.dataset.h };
+    else if (!p.on) return;
+    else if (e.pointerType === 'mouse') {
+      const a = clamp(Math.floor(rawAt(e.clientY) / SNAP) * SNAP, 0, LAST_MIN - 60);
+      p.blocks.push({ label: '', start: toHHMM(a), end: toHHMM(a + 60), after: 0 });
+      drag = { mode: 'create', j: p.blocks.length - 1, anchor: a };
+      redraw();
+    } else { drag = { mode: 'tap', x: e.clientX, y: e.clientY, m }; return; } // touch: leave scrolling alone
+    Object.assign(drag, { x: e.clientX, y: e.clientY, moved: false });
+    grid.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  grid.addEventListener('pointermove', e => {
+    if (!drag || drag.mode === 'tap') return;
+    if (Math.abs(e.clientY - drag.y) > 4) drag.moved = true;
+    if (!drag.moved) return;
+    const m = minAt(e.clientY), b = p.blocks[drag.j];
+    if (drag.mode === 'move') {
+      const dur = drag.z0 - drag.a0, a = clamp(drag.a0 + Math.round((rawAt(e.clientY) - drag.r0) / SNAP) * SNAP, 0, LAST_MIN - dur);
+      b.start = toHHMM(a); b.end = toHHMM(a + dur);
+    } else if (drag.mode === 'resize') b.end = toHHMM(clamp(m, toMin(b.start) + SNAP, LAST_MIN));
+    else if (drag.mode === 'create') {
+      const a = Math.min(drag.anchor, m), z = Math.max(drag.anchor + SNAP, m);
+      b.start = toHHMM(a); b.end = toHHMM(Math.min(z, LAST_MIN));
+    } else if (drag.mode === 'hours') {
+      if (drag.which === 'start') p.start = toHHMM(clamp(m, 0, toMin(p.end) - 30));
+      else p.end = toHHMM(clamp(m, toMin(p.start) + 30, LAST_MIN));
+    }
+    redraw();
+  });
+  const finish = e => {
+    const d = drag; drag = null; if (!d) return;
+    if (d.mode === 'tap') {
+      if (e.type === 'pointercancel' || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8 || !p.on) return;
+      const a = clamp(Math.floor(d.m / 60) * 60 + (d.m % 60 >= 30 ? 30 : 0), 0, LAST_MIN - 60);
+      p.blocks.push({ label: '', start: toHHMM(a), end: toHHMM(a + 60), after: 0 });
+      save(); render(); return openBlock(p.blocks.length - 1, true);
+    }
+    const obj = d.j != null ? p.blocks[d.j] : null;
+    p.blocks.sort((x, y) => toMin(x.start) - toMin(y.start));
+    save(); render();
+    if (d.mode === 'create') openBlock(p.blocks.indexOf(obj), true);
+    else if (d.mode === 'move' && !d.moved) openBlock(p.blocks.indexOf(obj));
+  };
+  grid.addEventListener('pointerup', finish);
+  grid.addEventListener('pointercancel', finish);
+
+  $('.wk-strip').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    calDay = Number(b.dataset.d); calScroll = null; render();
+  });
+  $('#cal-on').addEventListener('change', e => { p.on = e.target.checked; save(); render(); });
+  $('#cal-copy').addEventListener('click', () => openCopy(calDay));
+}
+
+/** Edit one block: name, exact times, quiet-after buffer, repeat on other days, delete. */
+function openBlock(j, isNew = false) {
+  const p = S().week[calDay], b = p.blocks[j]; if (!b) return;
+  showModal(`
+    <form id="bk" class="sheet">
+      <div class="sheet-head"><span class="pill">${DOW_LONG[calDay]}</span><span class="pill">${isNew ? 'New block' : 'Blocked time'}</span></div>
+      <input class="field big-input" id="bk-label" value="${esc(b.label)}" placeholder="What is it? e.g. Lecture" autocomplete="off">
+      <div class="two">
+        <label class="lbl">From<input class="field" type="time" id="bk-start" value="${b.start}"></label>
+        <label class="lbl">To<input class="field" type="time" id="bk-end" value="${b.end}"></label>
+      </div>
+      <label class="lbl">Stay quiet afterwards (travel, getting home…)</label>
+      <div class="chips" id="bk-after">${AFTER.map(m => `<button type="button" data-m="${m}" class="${m == (b.after || 0) ? 'sel' : ''}">${m ? (m < 60 ? m + ' min' : m / 60 + ' hr') : 'None'}</button>`).join('')}</div>
+      <label class="lbl">Also add on</label>
+      <div class="chips" id="bk-days">${[1, 2, 3, 4, 5, 6, 0].filter(i => i !== calDay).map(i => `<button type="button" data-d="${i}">${DOW[i]}</button>`).join('')}</div>
+      <div class="actions">
+        <button type="button" class="ghost danger" id="bk-del">Delete</button>
+        <button class="primary">Save</button>
+      </div>
+    </form>`, root => {
+    let after = Number(b.after || 0); const days = new Set();
+    $('#bk-label', root).focus();
+    $('#bk-after', root).addEventListener('click', e => {
+      const x = e.target.closest('button'); if (!x) return;
+      root.querySelectorAll('#bk-after button').forEach(y => y.classList.toggle('sel', y === x)); after = Number(x.dataset.m);
+    });
+    $('#bk-days', root).addEventListener('click', e => {
+      const x = e.target.closest('button'); if (!x) return;
+      const d = Number(x.dataset.d); days.has(d) ? days.delete(d) : days.add(d); x.classList.toggle('sel');
+    });
+    $('#bk-del', root).addEventListener('click', () => { p.blocks.splice(j, 1); save(); closeModal(); render(); });
+    $('#bk', root).addEventListener('submit', e => {
+      e.preventDefault();
+      const st = $('#bk-start', root).value || b.start, en = $('#bk-end', root).value || b.end;
+      if (toMin(en) <= toMin(st)) return alert('The end time needs to be after the start time.');
+      Object.assign(b, { label: $('#bk-label', root).value.trim(), start: st, end: en, after });
+      days.forEach(d => { const w = S().week[d]; w.blocks.push(clone(b)); w.blocks.sort((x, y) => toMin(x.start) - toMin(y.start)); });
+      p.blocks.sort((x, y) => toMin(x.start) - toMin(y.start));
+      save(); closeModal(); render();
+    });
+  });
 }
 
 function openCopy(from) {
@@ -546,52 +683,64 @@ function openCopy(from) {
     });
     $('#cp-cancel', root).addEventListener('click', closeModal);
     $('#cp-go', root).addEventListener('click', () => {
-      picked.forEach(d => { S().week[d] = clone(S().week[from]); openDays.add(d); });
+      picked.forEach(d => { S().week[d] = clone(S().week[from]); });
       save(); closeModal(); render();
     });
   });
 }
 
-function bindWeek() {
-  const box = $('#s-week'); if (!box) return;
-  box.querySelectorAll('details.wk').forEach(el => el.addEventListener('toggle', () => {
-    const i = Number(el.dataset.day); el.open ? openDays.add(i) : openDays.delete(i);
-  }));
-  box.addEventListener('change', e => {
-    const el = e.target, wk = el.closest('.wk'); if (!wk) return;
-    const p = S().week[wk.dataset.day];
-    if (el.dataset.f === 'on') p.on = el.checked;
-    else if (el.dataset.f && el.value) p[el.dataset.f] = el.value;
-    else if (el.dataset.b) {
-      const b = p.blocks[el.closest('.blk').dataset.j];
-      if (el.dataset.b === 'after') b.after = Number(el.value);
-      else if (el.dataset.b === 'label') b.label = el.value.trim();
-      else if (el.value) b[el.dataset.b] = el.value;
-      p.blocks.sort((x, y) => toMin(x.start) - toMin(y.start));
-    } else return;
-    save(); render();
-  });
-  box.addEventListener('click', e => {
-    const btn = e.target.closest('[data-act]'); if (!btn) return;
-    const i = Number(btn.closest('.wk').dataset.day), p = S().week[i];
-    if (btn.dataset.act === 'add') {
-      const last = p.blocks.at(-1);
-      const a = Math.min(last ? toMin(last.end) + 60 : toMin(p.start) + 60, 23 * 60);
-      p.blocks.push({ label: '', start: toHHMM(a), end: toHHMM(Math.min(a + 120, 23 * 60 + 59)), after: 30 });
-    } else if (btn.dataset.act === 'del') {
-      p.blocks.splice(Number(btn.closest('.blk').dataset.j), 1);
-    } else if (btn.dataset.act === 'copy') return openCopy(i);
-    save(); render();
+/* ---------------- plan priorities for future days ---------------- */
+const addDays = (key, n) => { const d = new Date(key + 'T12:00'); d.setDate(d.getDate() + n); return dateKey(d); };
+const niceDate = key => new Date(key + 'T12:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+const plannedAhead = () => Object.keys(state.days).filter(k => k > dateKey() && state.days[k].priorities?.length).sort();
+
+function openPlanAhead(startKey = addDays(dateKey(), 1)) {
+  const fill = key => { const cur = (peekDay(key)?.priorities || []).map(p => p.text); return Array.from({ length: Math.max(3, cur.length) }, (_, i) => priField(i, cur[i], false)).join(''); };
+  const planned = plannedAhead();
+  showModal(`
+    <form id="pa" class="sheet">
+      <div class="sheet-head"><span class="pill">Plan ahead</span></div>
+      <h2>Priorities for a future day</h2>
+      <label class="lbl">Date</label>
+      <input class="field" type="date" id="pa-date" min="${addDays(dateKey(), 1)}" value="${startKey}" required>
+      <label class="lbl">Priorities (up to ${MAX_PRIORITIES})</label>
+      <div id="pa-list">${fill(startKey)}</div>
+      <button type="button" class="link" id="pa-add">+ Add another priority</button>
+      ${planned.length ? `<label class="lbl">Already planned</label><div class="chips" id="pa-planned">${planned.map(k => `<button type="button" data-k="${k}" class="${k === startKey ? 'sel' : ''}">${niceDate(k)} · ${state.days[k].priorities.length}</button>`).join('')}</div>` : ''}
+      <p class="dim small">On the day, these show up ready in your morning stand-up — you can still add more.</p>
+      <div class="actions"><button type="button" class="ghost" id="pa-cancel">Close</button><button class="primary">Save</button></div>
+    </form>`, root => {
+    const list = $('#pa-list', root), add = $('#pa-add', root), dateIn = $('#pa-date', root);
+    const sync = () => { add.hidden = list.children.length >= MAX_PRIORITIES; };
+    sync();
+    dateIn.addEventListener('change', () => {
+      if (!dateIn.value) return;
+      list.innerHTML = fill(dateIn.value); sync();
+      root.querySelectorAll('#pa-planned button').forEach(b => b.classList.toggle('sel', b.dataset.k === dateIn.value));
+    });
+    $('#pa-planned', root)?.addEventListener('click', e => { const b = e.target.closest('button'); if (b) { dateIn.value = b.dataset.k; dateIn.dispatchEvent(new Event('change')); } });
+    add.addEventListener('click', () => { list.insertAdjacentHTML('beforeend', priField(list.children.length, '', false)); list.lastElementChild.focus(); sync(); });
+    $('#pa-cancel', root).addEventListener('click', closeModal);
+    $('#pa', root).addEventListener('submit', e => {
+      e.preventDefault();
+      const key = dateIn.value; if (!key || key <= dateKey()) return alert('Pick a date after today.');
+      const texts = [...list.querySelectorAll('input')].map(x => x.value.trim()).filter(Boolean).slice(0, MAX_PRIORITIES);
+      const d = day(key); d.priorities = texts.map(text => ({ text, done: false })); save();
+      speak(texts.length ? `Noted for ${niceDate(key)}. ${texts.length} priorit${texts.length > 1 ? 'ies' : 'y'} locked in.` : `Cleared ${niceDate(key)}.`, 'happy');
+      closeModal(); render();
+    });
   });
 }
 
 function bindView() {
-  bindWeek();
+  bindCal();
   const on = (id, ev, fn) => $(id)?.addEventListener(ev, fn);
   on('#enable-notif', 'click', async () => { await Notification.requestPermission(); render(); });
   on('#report', 'click', openCheckin);
   on('#break', 'click', openBreak);
   on('#edit-pri', 'click', () => openStandup(true));
+  on('#plan-ahead', 'click', () => openPlanAhead());
+  document.querySelectorAll('.ahead [data-k]').forEach(b => b.addEventListener('click', () => openPlanAhead(b.dataset.k)));
   on('#clockout', 'click', () => {
     if (!confirm('Clock out for the day?')) return;
     const d = day(); d.endedAt = nowMin(); d.standupDone = true; save();
@@ -604,8 +753,10 @@ function bindView() {
   // settings
   const set = (k, v) => { S()[k] = v; save(); };
   on('#s-name', 'change', e => { set('managerName', e.target.value.trim() || 'Gerald'); render(); });
-  on('#s-tone', 'change', e => { set('tone', e.target.value); speak(say(S().tone, 'idle', { next: fmt(nextSlot() ?? dayEnd(dateKey())) }), 'neutral', true); });
+  on('#s-tone', 'click', e => { const b = e.target.closest('button'); if (!b) return; set('tone', b.dataset.t); render(); speak(say(S().tone, 'idle', { next: fmt(nextSlot() ?? dayEnd(dateKey())) }), 'neutral', true); });
   on('#s-sound', 'change', e => set('sound', e.target.checked));
+  on('#s-morning-on', 'change', e => set('morningOn', e.target.checked));
+  on('#s-morning', 'change', e => e.target.value && set('morning', e.target.value));
   on('#s-voice', 'change', e => set('voice', e.target.checked));
   on('#s-int', 'change', e => { set('interval', Number(e.target.value)); render(); });
   on('#s-test', 'click', async () => {
@@ -618,7 +769,7 @@ function bindView() {
   on('#s-export', 'click', () => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' }));
-    a.download = `hourly-manager-${dateKey()}.json`; a.click();
+    a.download = `time-keeper-${dateKey()}.json`; a.click();
   });
   on('#s-reset', 'click', () => {
     if (!confirm('Erase all check-ins and settings? This cannot be undone.')) return;
@@ -654,3 +805,4 @@ tick();
 setInterval(tick, 10_000);
 setInterval(updateClock, 1000);
 if (location.search.includes('checkin')) openCheckin();
+else if (location.search.includes('priorities')) openStandup(day().standupDone);

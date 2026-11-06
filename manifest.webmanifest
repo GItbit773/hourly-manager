@@ -1,6 +1,6 @@
 {
-  "name": "Hourly Manager",
-  "short_name": "Manager",
+  "name": "Time Keeper",
+  "short_name": "Time Keeper",
   "id": "./",
   "start_url": "./",
   "scope": "./",

@@ -1,24 +1,19 @@
-# Hourly Manager
+# Time Keeper
 
-An overbearing manager that asks every hour what you did.
+A time keeper that checks in through your day and asks what you did. Vanilla JS PWA, no build step; all data stays on the device (localStorage).
 
-- Up to 5 daily priorities in the morning stand-up.
-- Weekly schedule: each weekday has its own hours and **blocked times** (lectures, travel…) with an optional *quiet after* buffer. No check-ins or reminders during a block; one check-in 10 min before it starts; the interval restarts when it ends. Vanilla JS PWA, no build step; all data stays on the device (localStorage).
+- **Priorities:** up to 5 a day in the morning stand-up, a daily reminder (default 7:00 AM), and **Plan ahead** to set priorities for future dates — they're pre-filled on the day and you can add more.
+- **Schedule:** a drag-to-edit calendar per weekday. Tap/drag to block out time (lectures, travel…), drag to move, drag the bottom edge to resize, tap to rename / set a "quiet after" buffer / repeat on other days. Drag the Start/End bars to set the day. No check-ins during blocks; one check-in 10 min before a block; the interval restarts after it.
+- **Personalities:** Mildly concerned, Micromanager, Drill sergeant, Hype coach, Zen master, Posh butler, Disappointed parent, Sarcastic coworker, Efficiency bot.
+
+Live: https://gitbit773.github.io/hourly-manager/
 
 ## Run locally (Mac)
     python3 tools/serve.py 4180   → http://127.0.0.1:4180
 
-## Put it on an iPhone
-iPhones can only install a web app served over **HTTPS**, so the folder has to be hosted once:
-- **Netlify Drop** — drag this whole `hourly-manager` folder onto https://app.netlify.com/drop, or
-- **GitHub Pages** — push the folder to a repo and enable Pages.
-
-Then on the iPhone:
-1. Open the URL in **Safari** → Share → **Add to Home Screen**.
-2. Open it from the home screen, tap **Enable** for notifications (iOS 16.4+).
+## On an iPhone
+1. Open the live URL in **Safari** → Share → **Add to Home Screen**.
+2. Open it from the home screen and tap **Enable** for notifications (iOS 16.4+).
 3. Settings → **Add check-ins to Calendar** → Add All.
 
-### Why the Calendar alarms?
-iOS freezes web apps in the background, so the in-app hourly timer only fires while the app is open.
-The Calendar events ring at every check-in even when the app is closed; tapping one opens the check-in.
-Re-add them (after deleting the old ones) whenever you change your schedule.
+iOS freezes web apps in the background, so the in-app timer only fires while the app is open. The Calendar events (every check-in plus the daily priorities reminder) ring even when it's closed; tapping one opens the app. Delete the old events and re-add them whenever you change your schedule.
