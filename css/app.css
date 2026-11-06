@@ -182,7 +182,10 @@ dialog::backdrop { background: rgba(20, 18, 14, .5); backdrop-filter: blur(3px);
 .wk-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 12px 0 8px; }
 .wk-strip button { position: relative; border: 1px solid var(--border); border-radius: 10px; padding: 6px 0; background: var(--card); display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0; }
 .wk-strip b { font-size: 13px; color: var(--ink); }
-.wk-strip span { font-size: 9.5px; color: var(--text-dim); white-space: nowrap; }
+.wk-strip span { font-size: 15px; font-weight: 650; color: var(--text); }
+.wk-strip b { font-weight: 550 !important; font-size: 11px !important; color: var(--text-dim) !important; text-transform: uppercase; letter-spacing: .03em; }
+.wk-strip button.today span { color: var(--red); }
+.wk-strip button.sel.today span { color: var(--bg); }
 .wk-strip i { position: absolute; top: -5px; right: -3px; font-style: normal; font-size: 10px; font-weight: 700; background: var(--amber); color: #fff; border-radius: 999px; min-width: 16px; height: 16px; line-height: 16px; text-align: center; }
 .wk-strip button.off b, .wk-strip button.off span { color: var(--text-faint); }
 .wk-strip button.sel { background: var(--ink); border-color: var(--ink); }
@@ -211,4 +214,16 @@ dialog::backdrop { background: rgba(20, 18, 14, .5); backdrop-filter: blur(3px);
 .hnd::before { content: ''; position: absolute; left: 0; right: 0; top: -14px; height: 28px; }
 .big-input { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
 .sheet .two .lbl .field { margin-top: 4px; }
-@media (max-width: 520px) { .wk-strip span { display: none; } .wk-strip button { padding: 9px 0; } }
+
+.cal-nav { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.cal-nav b { font-size: 15px; color: var(--ink); min-width: 120px; text-align: center; }
+.ghost.sm { padding: 4px 12px; font-size: 18px; line-height: 1.2; border-radius: 10px; }
+.cal-nav .link { margin-left: auto; }
+.ev.once { background: var(--card); color: var(--ink); border: 2px solid var(--ink); }
+.ev.once .ev-resize::after { background: var(--ink); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 8px; }
+.seg button { padding: 8px 14px; font-size: 14px; background: var(--card); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.sel { background: var(--ink); color: var(--bg); }
+#bk-days[hidden] { display: none; }
+.grow { flex: 1 1 100%; text-align: right; }

@@ -14,8 +14,8 @@ export const TONES = {
 
 export const LINES = {
   gentle: {
-    prompt: ["Hi! Quick check-in: what did you get done {range}?", "Hey, how did {range} go?", "Just touching base — what happened {range}?"],
-    nag: ["Still waiting on that update, no rush… but also some rush.", "Hello? Just want to know how {range} went.", "I'm getting a little worried. Update please?"],
+    prompt: ["Hi! Quick check-in: what did you get done {range}?", "Hey, how did it go {range}?", "Just touching base — what happened {range}?"],
+    nag: ["Still waiting on that update, no rush… but also some rush.", "Hello? Just want to know how things went {range}.", "I'm getting a little worried. Update please?"],
     great: ["Wonderful, really. Keep that going.", "That's a strong hour. Proud of you.", "Love to see it."],
     meh: ["Okay, that's okay. Next hour can be better.", "Fair enough. Let's tighten up a little.", "Noted. Steady progress counts."],
     bad: ["That happens. What's one thing you can finish next hour?", "Rough hour. Let's reset — pick one small task.", "Okay. No judgement. But let's not make it a habit."],
@@ -74,7 +74,7 @@ export const LINES = {
     review: { A: "EXEMPLARY SERVICE! YOU MAY REST!", B: "GOOD WORK! NOT GREAT! GOOD!", C: "PASSABLE! BARELY!", D: "YOU CALL THAT A DAY?!", F: "I WANT YOU AT FORMATION AT 0600!" },
   },
   coach: {
-    prompt: ["TIMEOUT! Huddle up — what did we get done {range}?", "Big moment, champ! Walk me through {range}!", "Let's look at the tape: what happened {range}?"],
+    prompt: ["TIMEOUT! Huddle up — what did we get done {range}?", "Big moment, champ! Walk me through what happened {range}!", "Let's look at the tape: what happened {range}?"],
     nag: ["The whole stadium is waiting on your report!", "Champ? The clock's running and I need that play-by-play!", "Don't leave me hanging on the sideline!"],
     great: ["THAT'S A TOUCHDOWN! LET'S GOOO!", "MVP performance right there!", "You're in the zone! Stay there!"],
     meh: ["Solid possession. Now let's put points on the board!", "We stayed in the game. Now let's WIN it.", "Good hustle. I know there's another gear in you."],
@@ -94,7 +94,7 @@ export const LINES = {
     review: { A: "CHAMPIONSHIP PERFORMANCE! 🏆", B: "Strong win! Let's make tomorrow a blowout!", C: "We scraped a draw. Tomorrow we go for the W.", D: "Tough loss. Film session tomorrow.", F: "We got benched today. Comeback starts tomorrow!" },
   },
   zen: {
-    prompt: ["Breathe. Now, gently — what did you do {range}?", "The river of time flowed {range}. What did you place in it?", "Pause. Reflect. What was {range} spent on?"],
+    prompt: ["Breathe. Now, gently — what did you do {range}?", "The river of time flowed {range}. What did you place in it?", "Pause. Reflect. How was your time spent {range}?"],
     nag: ["The bell has rung. It is waiting for you.", "A check-in unanswered is like a pebble in the shoe.", "I am patient. But I am still here."],
     great: ["You were present. That is everything.", "Like water, you flowed through the work. Beautiful.", "Peaceful, productive. Well done."],
     meh: ["Some progress, some drifting. This is the way of things.", "The mind wandered. Gently bring it back.", "Acceptance. And then, improvement."],
@@ -114,7 +114,7 @@ export const LINES = {
     review: { A: "Harmony achieved.", B: "A balanced day, with small ripples.", C: "The path was uneven. That is okay.", D: "Much distraction today. Tomorrow, more stillness.", F: "Chaos reigned. Tomorrow, we begin again." },
   },
   butler: {
-    prompt: ["Pardon the intrusion. Might I enquire what was accomplished {range}?", "Your report, if you would be so kind — {range}?", "Ahem. The hour has come to account for {range}."],
+    prompt: ["Pardon the intrusion. Might I enquire what was accomplished {range}?", "Your report, if you would be so kind — what happened {range}?", "Ahem. Might you account for your time {range}?"],
     nag: ["I shall wait. Standing. Silently. Indefinitely.", "Forgive me for repeating myself, but the report remains… outstanding.", "I've taken the liberty of reminding you again."],
     great: ["Splendid. Simply splendid.", "Most impressive. I shall inform the household.", "Exemplary. I'd expect nothing less. Well — I'd expected a little less."],
     meh: ["Adequate. In the way that lukewarm tea is adequate.", "I see. How… industrious.", "A modest effort. Very modest."],
@@ -154,7 +154,7 @@ export const LINES = {
     review: { A: "I'm so proud of you. Truly.", B: "Good job! We're getting there.", C: "It was okay. I know you can do better.", D: "We need to have a talk.", F: "Go to your room. And make a plan for tomorrow." },
   },
   sarcastic: {
-    prompt: ["Oh good, it's check-in time. My favourite. What did you do {range}?", "So. {range}. Dazzle me.", "Riveting question incoming: what happened {range}?"],
+    prompt: ["Oh good, it's check-in time. My favourite. What did you do {range}?", "So. What happened {range}? Dazzle me.", "Riveting question incoming: what happened {range}?"],
     nag: ["Take your time. Not like I have other people to judge.", "Still waiting. I've aged visibly.", "Wow. Ghosted by my own coworker."],
     great: ["Okay, show-off.", "Wow. Who are you and what did you do with the real you?", "Fine. That was actually good. Don't tell anyone I said that."],
     meh: ["Thrilling. Truly a page-turner.", "Middle of the road. Classic.", "Ah yes, the famous 'it was fine'."],
@@ -174,7 +174,7 @@ export const LINES = {
     review: { A: "Okay, you win today. Annoying.", B: "Pretty good. I'm almost impressed.", C: "Aggressively average.", D: "Well, tomorrow can't be worse. Probably.", F: "Legendary. In the worst way." },
   },
   robot: {
-    prompt: ["CHECK-IN REQUIRED. LOG OUTPUT FOR INTERVAL {range}.", "BEEP. SUBMIT ACTIVITY DATA: {range}.", "SCHEDULED QUERY: WHAT WAS PRODUCED {range}?"],
+    prompt: ["CHECK-IN REQUIRED. LOG YOUR OUTPUT {range}.", "BEEP. SUBMIT ACTIVITY DATA {range}.", "SCHEDULED QUERY: WHAT WAS PRODUCED {range}?"],
     nag: ["NO INPUT DETECTED. RETRYING.", "WARNING: REPORT OVERDUE. HUMAN UNRESPONSIVE.", "ERROR 408: YOUR UPDATE TIMED OUT."],
     great: ["EFFICIENCY: OPTIMAL. KEEP THIS UP.", "PERFORMANCE ABOVE BASELINE. LOGGED.", "EXCELLENT OUTPUT. YOU ARE 12% MORE ROBOT TODAY."],
     meh: ["EFFICIENCY: NOMINAL. ROOM FOR OPTIMISATION.", "OUTPUT ACCEPTABLE. NOT IMPRESSIVE.", "PROCESSING… RESULT: MEH."],

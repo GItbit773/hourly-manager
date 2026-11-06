@@ -1,5 +1,5 @@
 // Offline cache + notification click handling. Bump CACHE when files change.
-const CACHE = 'time-keeper-v5';
+const CACHE = 'time-keeper-v6';
 const FILES = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/lines.js', 'icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', e => {

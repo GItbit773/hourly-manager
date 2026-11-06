@@ -3,7 +3,8 @@
 A time keeper that checks in through your day and asks what you did. Vanilla JS PWA, no build step; all data stays on the device (localStorage).
 
 - **Priorities:** up to 5 a day in the morning stand-up, a daily reminder (default 7:00 AM), and **Plan ahead** to set priorities for future dates — they're pre-filled on the day and you can add more.
-- **Schedule:** a drag-to-edit calendar per weekday. Tap/drag to block out time (lectures, travel…), drag to move, drag the bottom edge to resize, tap to rename / set a "quiet after" buffer / repeat on other days. Drag the Start/End bars to set the day. No check-ins during blocks; one check-in 10 min before a block; the interval restarts after it.
+- **No priorities, no check-ins:** check-ins only run on days with priorities. Set them mid-day and check-ins start from then (no backlog).
+- **Schedule:** a week-by-week drag calendar. Tap/drag to add an event (lectures, travel…) that **repeats every week** on chosen days or happens **once** on a date; drag to move, drag the bottom edge to resize, tap to edit or delete (one date or every week). Drag the Start/End bars to set each weekday's hours. No check-ins during events; one check-in 10 min before; the interval restarts after.
 - **Personalities:** Mildly concerned, Micromanager, Drill sergeant, Hype coach, Zen master, Posh butler, Disappointed parent, Sarcastic coworker, Efficiency bot.
 
 Live: https://gitbit773.github.io/hourly-manager/

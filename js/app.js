@@ -7,10 +7,25 @@ const DEFAULTS = { managerName: 'Gerald', tone: 'micro', interval: 60, sound: tr
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DOW_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MAX_PRIORITIES = 5;
-/** One plan per weekday (index 0 = Sunday): hours + blocked-out quiet times. */
+/** Working hours per weekday (index 0 = Sunday). Events (lectures etc.) live in settings.events. */
 const defaultWeek = (old = {}) => DOW.map((_, i) => ({
-  on: (old.workdays || [1, 2, 3, 4, 5]).includes(i), start: old.start || '09:00', end: old.end || '17:00', blocks: [],
+  on: (old.workdays || [1, 2, 3, 4, 5]).includes(i), start: old.start || '09:00', end: old.end || '17:00',
 }));
+const uid = () => Math.random().toString(36).slice(2, 10);
+/** Event: { id, label, start, end, after, days: [weekdays] (repeats weekly) | date: 'YYYY-MM-DD' (once), skip: [dates] } */
+function migrateEvents(settings) {
+  if (!Array.isArray(settings.events)) {
+    const map = new Map();
+    settings.week.forEach((w, i) => (w.blocks || []).forEach(b => {
+      const k = [b.label, b.start, b.end, b.after || 0].join('|');
+      if (!map.has(k)) map.set(k, { id: uid(), label: b.label || '', start: b.start, end: b.end, after: Number(b.after || 0), days: [], date: null, skip: [] });
+      map.get(k).days.push(i);
+    }));
+    settings.events = [...map.values()];
+  }
+  settings.week.forEach(w => delete w.blocks);
+  return settings;
+}
 let state = load();
 function load() {
   try {
@@ -19,10 +34,10 @@ function load() {
       const settings = { ...DEFAULTS, ...s.settings };
       if (!Array.isArray(settings.week)) settings.week = defaultWeek(s.settings); // migrate v1 settings
       delete settings.start; delete settings.end; delete settings.workdays;
-      return { settings, days: s.days };
+      return { settings: migrateEvents(settings), days: s.days };
     }
   } catch {}
-  return { settings: { ...DEFAULTS, week: defaultWeek() }, days: {} };
+  return { settings: { ...DEFAULTS, week: defaultWeek(), events: [] }, days: {} };
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
 const S = () => state.settings;
@@ -40,10 +55,17 @@ function fmt(min) {
 const toHHMM = m => `${pad(Math.floor(m / 60) % 24)}:${pad(Math.round(m) % 60)}`;
 const dow = key => new Date(key + 'T12:00').getDay();
 const clone = o => JSON.parse(JSON.stringify(o));
-/** Past days keep the schedule they were lived with; today follows the live schedule. */
+const eventsOn = key => S().events
+  .filter(e => e.date ? e.date === key : e.days.includes(dow(key)) && !(e.skip || []).includes(key))
+  .sort((a, b) => toMin(a.start) - toMin(b.start));
+/** A day's plan: that weekday's hours + the events happening on that date. */
+const livePlan = key => ({ ...S().week[dow(key)], blocks: eventsOn(key) });
+/** The repeating pattern for a weekday (used for Calendar alarms). */
+const weekdayPlan = wd => ({ ...S().week[wd], blocks: S().events.filter(e => !e.date && e.days.includes(wd)) });
+/** Past days keep the schedule they were lived with; today and later follow the live schedule. */
 function plan(key) {
   const d = state.days[key];
-  return key < dateKey() && d?.plan ? d.plan : S().week[dow(key)];
+  return key < dateKey() && d?.plan ? d.plan : livePlan(key);
 }
 const isWorkday = key => !!plan(key)?.on;
 const dayStart = key => toMin(plan(key).start);
@@ -98,16 +120,19 @@ function day(key = dateKey()) {
 const peekDay = key => state.days[key];
 
 /** Check-in times (minutes since midnight) for a day. */
+/** No priorities → no check-ins. Priorities set mid-day start check-ins from that moment (no backlog). */
 function slots(key) {
   const d = peekDay(key) || {};
-  const out = planSlots(plan(key), d.endedAt).map(x => x.t);
+  const out = d.priorities?.length
+    ? planSlots(plan(key), d.endedAt).map(x => x.t).filter(t => d.priFrom == null || t > d.priFrom)
+    : [];
   // keep any slots already answered even if settings changed
   Object.keys(d.entries || {}).map(Number).forEach(t => { if (!out.includes(t)) out.push(t); });
   return out.sort((a, b) => a - b);
 }
 function slotFrom(key, t) {
   const hit = planSlots(plan(key), peekDay(key)?.endedAt).find(x => x.t === t);
-  if (hit) return hit.from;
+  if (hit) return Math.max(hit.from, Math.floor(peekDay(key)?.priFrom ?? 0));
   const list = slots(key); const idx = list.indexOf(t);
   return idx > 0 ? list[idx - 1] : t - Number(S().interval);
 }
@@ -254,7 +279,6 @@ function openCheckin() {
   const key = dateKey(), p = pending();
   if (!p.length) return;
   const t = p[0], d = day(key);
-  const owed = p.length > 1 ? `<p class="owed">${esc(say(S().tone, 'owed', { n: p.length }))}</p>` : '';
   const pri = d.priorities.length
     ? `<label class="lbl">Did it move a priority forward?</label>
        <div class="chips" id="pri">${d.priorities.map((x, i) => `<button type="button" data-i="${i}">${esc(x.text)}</button>`).join('')}<button type="button" data-i="-1" class="sel">Not really</button></div>`
@@ -263,7 +287,6 @@ function openCheckin() {
     <form id="ci" class="sheet">
       <div class="sheet-head"><span class="pill">${fmt(slotFrom(key, t))} – ${fmt(t)}</span>${p.length > 1 ? `<span class="pill red">${p.length} owed</span>` : ''}</div>
       <h2>${esc(say(S().tone, 'prompt', { range: rangeText(key, t) }))}</h2>
-      ${owed}
       <textarea id="ci-text" rows="4" required placeholder="e.g. Drafted the intro of the report, answered 6 emails, 20 min on Slack…"></textarea>
       <label class="lbl">How productive was it, honestly?</label>
       <div class="rating" id="rate">${[1, 2, 3, 4, 5].map(n => `<button type="button" data-n="${n}" class="${n === 3 ? 'sel' : ''}">${n}<small>${['Wasted', 'Weak', 'Okay', 'Good', 'Crushed it'][n - 1]}</small></button>`).join('')}</div>
@@ -322,6 +345,8 @@ function openStandup(edit = false) {
     $('#su', root).addEventListener('submit', e => {
       e.preventDefault();
       const texts = [...root.querySelectorAll('#su-list input')].map(x => x.value.trim()).filter(Boolean).slice(0, MAX_PRIORITIES);
+      if (!texts.length) d.priFrom = null;
+      else if (!d.priorities.length) d.priFrom = nowMin() > dayStart(dateKey()) ? Math.floor(nowMin()) : null;
       d.priorities = texts.map(text => ({ text, done: d.priorities.find(p => p.text === text)?.done || false }));
       d.standupDone = true; save(); closeModal();
       speak(say(S().tone, 'idle', { next: fmt(nextSlot() ?? dayEnd(dateKey())) }), 'neutral'); render(); tick();
@@ -366,7 +391,8 @@ function downloadICS() {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
   const url = location.origin + location.pathname + '?checkin';
   const ev = [];
-  st.week.forEach((p, wd) => {
+  st.week.forEach((_, wd) => {
+    const p = weekdayPlan(wd);
     const first = new Date(); first.setDate(first.getDate() + ((wd - first.getDay() + 7) % 7));
     const ymd = `${first.getFullYear()}${pad(first.getMonth() + 1)}${pad(first.getDate())}`;
     for (const { t, from } of planSlots(p)) {
@@ -454,6 +480,7 @@ function viewToday() {
   const quiet = q ? `<p class="quiet">🔕 ${esc(q[2].label || 'Blocked time')} — quiet until ${fmt(q[1])}</p>` : '';
   let status;
   if (!isWorkday(key)) status = `<p class="big">Day off</p><p class="dim">${esc(say(S().tone, 'off'))}</p>`;
+  else if (!d.priorities.length && !dayOver(key)) status = `<p class="label">No priorities yet</p><p class="big">Check-ins paused</p><p class="dim">Set today's priorities and ${esc(S().managerName)} will start checking in from then.</p><button class="primary wide" id="set-pri">Set today's priorities</button>`;
   else if (now < dayStart(key)) status = `<p class="label">Workday starts</p><p class="big">${fmt(dayStart(key))}</p><p class="dim">${esc(say(S().tone, 'before', { start: fmt(dayStart(key)) }))}</p>`;
   else if (p.length) status = `${quiet}<p class="label">Overdue</p><p class="big red">${p.length} report${p.length > 1 ? 's' : ''} owed</p><button class="primary wide" id="report">Report in now</button>`;
   else if (dayOver(key)) status = `<p class="label">Clocked out</p><p class="big">See you tomorrow</p>`;
@@ -513,44 +540,62 @@ function viewSettings() {
   </section>`;
 }
 
-/* ---------------- schedule calendar (drag to block out time) ---------------- */
+/* ---------------- schedule calendar (date-based week, recurring + one-time events) ---------------- */
 const HOUR_PX = 44, SNAP = 15, LAST_MIN = 23 * 60 + 59;
 const AFTER = [0, 15, 30, 45, 60, 90, 120];
-let calDay = new Date().getDay(), calScroll = null;
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
+let calDate = dateKey(), calScroll = null;
 const ypx = m => m / 60 * HOUR_PX;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 function fmtShort(hhmm) {
   const m = toMin(hhmm), h = Math.floor(m / 60), mm = m % 60;
   return `${h % 12 || 12}${mm ? ':' + pad(mm) : ''}${h < 12 ? 'a' : 'p'}`;
 }
+/** Monday-first list of the 7 date keys in the week containing `key`. */
+const weekOf = key => { const off = (dow(key) + 6) % 7; return Array.from({ length: 7 }, (_, i) => addDays(key, i - off)); };
+const shortDate = key => new Date(key + 'T12:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+function repeatText(e) {
+  if (e.date) return 'Once · ' + niceDate(e.date);
+  const ds = WEEK_ORDER.filter(i => e.days.includes(i));
+  if (ds.length === 7) return 'Every day';
+  if (ds.length === 5 && !ds.includes(0) && !ds.includes(6)) return 'Every weekday';
+  return 'Every ' + ds.map(i => DOW[i]).join(', ');
+}
+const findEvent = id => S().events.find(e => e.id === id);
 
 function scheduleSection(s) {
-  const p = S().week[calDay], sl = planSlots(p);
+  const key = calDate, w = S().week[dow(key)], p = livePlan(key), sl = planSlots(p), wk = weekOf(key);
   return `<section class="card form" id="s-week">
-    <h3>Weekly schedule</h3>
-    <p class="dim small"><b>Tap or drag</b> on the calendar to block out time (lectures, travel…) — no check-ins happen during a block. Drag a block to move it, drag its bottom edge to resize, tap it to rename or delete. Drag the <b>Start</b> / <b>End</b> bars to set your day.</p>
-    <div class="wk-strip">${[1, 2, 3, 4, 5, 6, 0].map(i => {
-      const w = S().week[i];
-      return `<button type="button" data-d="${i}" class="${i === calDay ? 'sel' : ''} ${w.on ? '' : 'off'}"><b>${DOW[i]}</b><span>${w.on ? fmtShort(w.start) + '–' + fmtShort(w.end) : 'off'}</span>${w.on && w.blocks.length ? `<i>${w.blocks.length}</i>` : ''}</button>`;
+    <h3>Schedule</h3>
+    <p class="dim small"><b>Tap or drag</b> on the calendar to add an event (lecture, travel…) — no check-ins happen during events. Events can <b>repeat every week</b> or happen just once. Drag to move, drag the bottom edge to resize, tap to edit. Drag the <b>Start</b> / <b>End</b> bars to set your hours.</p>
+    <div class="cal-nav">
+      <button type="button" class="ghost sm" data-nav="-7" aria-label="Previous week">‹</button>
+      <b>${shortDate(wk[0])} – ${shortDate(wk[6])}</b>
+      <button type="button" class="ghost sm" data-nav="7" aria-label="Next week">›</button>
+      ${weekOf(dateKey())[0] !== wk[0] ? '<button type="button" class="link" data-nav="today">This week</button>' : ''}
+    </div>
+    <div class="wk-strip">${wk.map(k => {
+      const ww = S().week[dow(k)], n = ww.on ? eventsOn(k).length : 0;
+      return `<button type="button" data-k="${k}" class="${k === key ? 'sel' : ''} ${ww.on ? '' : 'off'} ${k === dateKey() ? 'today' : ''}"><b>${DOW[dow(k)]}</b><span>${new Date(k + 'T12:00').getDate()}</span>${n ? `<i>${n}</i>` : ''}</button>`;
     }).join('')}</div>
-    <div class="cal-bar"><label class="tog"><input type="checkbox" id="cal-on" ${p.on ? 'checked' : ''}> Work day</label><button type="button" class="link" id="cal-copy">Copy ${DOW_LONG[calDay]} to other days…</button></div>
-    <div class="cal" id="cal"><div class="cal-grid" id="cal-grid" style="height:${ypx(24 * 60)}px">${calInner(calDay)}</div></div>
-    <p class="dim small slots-preview"><b>🔔 ${DOW_LONG[calDay]} check-ins:</b> ${p.on ? (sl.length ? sl.map(x => fmt(x.t)).join(' · ') : 'none') : 'day off'}</p>
+    <div class="cal-bar"><label class="tog"><input type="checkbox" id="cal-on" ${w.on ? 'checked' : ''}> Work day (every ${DOW_LONG[dow(key)]})</label><button type="button" class="link" id="cal-copy">Copy to other days…</button></div>
+    <div class="cal" id="cal"><div class="cal-grid" id="cal-grid" style="height:${ypx(24 * 60)}px">${calInner(key)}</div></div>
+    <p class="dim small slots-preview"><b>🔔 Check-ins on ${niceDate(key)}:</b> ${p.on ? (sl.length ? sl.map(x => fmt(x.t)).join(' · ') : 'none') : 'day off'} <br>Check-ins only run once you've set priorities for the day.</p>
     <label>Check in every<select class="field" id="s-int">${[30, 45, 60, 90, 120].map(m => `<option value="${m}" ${m == s.interval ? 'selected' : ''}>${m < 60 ? m + ' minutes' : m / 60 + ' hour' + (m > 60 ? 's' : '')}</option>`).join('')}</select></label>
   </section>`;
 }
 
-function calInner(i) {
-  const p = S().week[i], out = [];
+function calInner(key) {
+  const p = livePlan(key), out = [];
   for (let h = 0; h < 24; h++) out.push(`<div class="cal-h" style="top:${ypx(h * 60)}px"><span>${h ? fmtShort(toHHMM(h * 60)) : ''}</span></div>`);
   if (!p.on) return out.join('') + `<div class="cal-off all"><span>Day off — tick “Work day” to plan it</span></div>`;
   const s = toMin(p.start), e = toMin(p.end);
   out.push(`<div class="cal-off" style="top:0;height:${ypx(s)}px"></div><div class="cal-off" style="top:${ypx(e)}px;height:${ypx(24 * 60 - e)}px"></div>`);
   planSlots(p).forEach(x => out.push(`<div class="cal-slot" style="top:${ypx(x.t)}px"><span>🔔 ${fmt(x.t)}</span></div>`));
-  p.blocks.forEach((b, j) => {
-    const a = toMin(b.start), z = toMin(b.end), af = Number(b.after || 0);
+  p.blocks.forEach(ev => {
+    const a = toMin(ev.start), z = toMin(ev.end), af = Number(ev.after || 0);
     if (af) out.push(`<div class="ev-after" style="top:${ypx(z)}px;height:${ypx(Math.min(af, 24 * 60 - z))}px"><span>quiet ${af} min</span></div>`);
-    out.push(`<div class="ev ${z - a < 45 ? 'short' : ''}" data-j="${j}" style="top:${ypx(a)}px;height:${Math.max(ypx(z - a), 14)}px"><b>${esc(b.label || 'Busy')}</b><span>${fmt(a)} – ${fmt(z)}</span><i class="ev-resize" data-j="${j}"></i></div>`);
+    out.push(`<div class="ev ${z - a < 45 ? 'short' : ''} ${ev.date ? 'once' : ''}" data-id="${ev.id}" style="top:${ypx(a)}px;height:${Math.max(ypx(z - a), 14)}px"><b>${ev.date ? '' : '↻ '}${esc(ev.label || 'Busy')}</b><span>${fmt(a)} – ${fmt(z)}</span><i class="ev-resize" data-id="${ev.id}"></i></div>`);
   });
   out.push(`<div class="hnd" data-h="start" style="top:${ypx(s)}px"><span>Start ${fmt(s)}</span></div><div class="hnd" data-h="end" style="top:${ypx(e)}px"><span>End ${fmt(e)}</span></div>`);
   return out.join('');
@@ -558,26 +603,30 @@ function calInner(i) {
 
 function bindCal() {
   const grid = $('#cal-grid'), cal = $('#cal'); if (!grid) return;
-  const p = S().week[calDay];
-  cal.scrollTop = calScroll ?? ypx(Math.max(0, (p.on ? toMin(p.start) : 8 * 60) - 60));
+  const key = calDate, w = S().week[dow(key)];
+  cal.scrollTop = calScroll ?? ypx(Math.max(0, (w.on ? toMin(w.start) : 8 * 60) - 60));
   cal.addEventListener('scroll', () => { calScroll = cal.scrollTop; }, { passive: true });
   const rawAt = y => (y - grid.getBoundingClientRect().top) / HOUR_PX * 60;
   const minAt = y => clamp(Math.round(rawAt(y) / SNAP) * SNAP, 0, 24 * 60);
-  const redraw = () => { grid.innerHTML = calInner(calDay); };
+  const redraw = () => { grid.innerHTML = calInner(key); };
+  const newEvent = a => {
+    const ev = { id: uid(), label: '', start: toHHMM(a), end: toHHMM(a + 60), after: 0, days: [dow(key)], date: null, skip: [] };
+    S().events.push(ev); return ev;
+  };
   let drag = null;
 
   grid.addEventListener('pointerdown', e => {
-    const rz = e.target.closest('.ev-resize'), ev = e.target.closest('.ev'), h = e.target.closest('.hnd'), m = minAt(e.clientY);
-    if (rz) drag = { mode: 'resize', j: +rz.dataset.j };
-    else if (ev) { const b = p.blocks[+ev.dataset.j]; drag = { mode: 'move', j: +ev.dataset.j, r0: rawAt(e.clientY), a0: toMin(b.start), z0: toMin(b.end) }; }
+    const rz = e.target.closest('.ev-resize'), el = e.target.closest('.ev'), h = e.target.closest('.hnd'), m = minAt(e.clientY);
+    if (rz) drag = { mode: 'resize', ev: findEvent(rz.dataset.id) };
+    else if (el) { const ev = findEvent(el.dataset.id); drag = { mode: 'move', ev, r0: rawAt(e.clientY), a0: toMin(ev.start), z0: toMin(ev.end) }; }
     else if (h) drag = { mode: 'hours', which: h.dataset.h };
-    else if (!p.on) return;
+    else if (!w.on) return;
     else if (e.pointerType === 'mouse') {
       const a = clamp(Math.floor(rawAt(e.clientY) / SNAP) * SNAP, 0, LAST_MIN - 60);
-      p.blocks.push({ label: '', start: toHHMM(a), end: toHHMM(a + 60), after: 0 });
-      drag = { mode: 'create', j: p.blocks.length - 1, anchor: a };
+      drag = { mode: 'create', ev: newEvent(a), anchor: a };
       redraw();
     } else { drag = { mode: 'tap', x: e.clientX, y: e.clientY, m }; return; } // touch: leave scrolling alone
+    if (drag.mode !== 'hours' && !drag.ev) { drag = null; return; }
     Object.assign(drag, { x: e.clientX, y: e.clientY, moved: false });
     grid.setPointerCapture(e.pointerId); e.preventDefault();
   });
@@ -585,83 +634,94 @@ function bindCal() {
     if (!drag || drag.mode === 'tap') return;
     if (Math.abs(e.clientY - drag.y) > 4) drag.moved = true;
     if (!drag.moved) return;
-    const m = minAt(e.clientY), b = p.blocks[drag.j];
+    const m = minAt(e.clientY), ev = drag.ev;
     if (drag.mode === 'move') {
       const dur = drag.z0 - drag.a0, a = clamp(drag.a0 + Math.round((rawAt(e.clientY) - drag.r0) / SNAP) * SNAP, 0, LAST_MIN - dur);
-      b.start = toHHMM(a); b.end = toHHMM(a + dur);
-    } else if (drag.mode === 'resize') b.end = toHHMM(clamp(m, toMin(b.start) + SNAP, LAST_MIN));
+      ev.start = toHHMM(a); ev.end = toHHMM(a + dur);
+    } else if (drag.mode === 'resize') ev.end = toHHMM(clamp(m, toMin(ev.start) + SNAP, LAST_MIN));
     else if (drag.mode === 'create') {
       const a = Math.min(drag.anchor, m), z = Math.max(drag.anchor + SNAP, m);
-      b.start = toHHMM(a); b.end = toHHMM(Math.min(z, LAST_MIN));
+      ev.start = toHHMM(a); ev.end = toHHMM(Math.min(z, LAST_MIN));
     } else if (drag.mode === 'hours') {
-      if (drag.which === 'start') p.start = toHHMM(clamp(m, 0, toMin(p.end) - 30));
-      else p.end = toHHMM(clamp(m, toMin(p.start) + 30, LAST_MIN));
+      if (drag.which === 'start') w.start = toHHMM(clamp(m, 0, toMin(w.end) - 30));
+      else w.end = toHHMM(clamp(m, toMin(w.start) + 30, LAST_MIN));
     }
     redraw();
   });
   const finish = e => {
     const d = drag; drag = null; if (!d) return;
     if (d.mode === 'tap') {
-      if (e.type === 'pointercancel' || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8 || !p.on) return;
+      if (e.type === 'pointercancel' || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8 || !w.on) return;
       const a = clamp(Math.floor(d.m / 60) * 60 + (d.m % 60 >= 30 ? 30 : 0), 0, LAST_MIN - 60);
-      p.blocks.push({ label: '', start: toHHMM(a), end: toHHMM(a + 60), after: 0 });
-      save(); render(); return openBlock(p.blocks.length - 1, true);
+      const ev = newEvent(a); save(); render(); return openEvent(ev.id, true);
     }
-    const obj = d.j != null ? p.blocks[d.j] : null;
-    p.blocks.sort((x, y) => toMin(x.start) - toMin(y.start));
     save(); render();
-    if (d.mode === 'create') openBlock(p.blocks.indexOf(obj), true);
-    else if (d.mode === 'move' && !d.moved) openBlock(p.blocks.indexOf(obj));
+    if (d.mode === 'create') openEvent(d.ev.id, true);
+    else if (d.mode === 'move' && !d.moved) openEvent(d.ev.id);
   };
   grid.addEventListener('pointerup', finish);
   grid.addEventListener('pointercancel', finish);
 
-  $('.wk-strip').addEventListener('click', e => {
-    const b = e.target.closest('button'); if (!b) return;
-    calDay = Number(b.dataset.d); calScroll = null; render();
+  $('#s-week').addEventListener('click', e => {
+    const nav = e.target.closest('[data-nav]'), k = e.target.closest('.wk-strip [data-k]');
+    if (nav) { calDate = nav.dataset.nav === 'today' ? dateKey() : addDays(calDate, Number(nav.dataset.nav)); render(); }
+    else if (k) { calDate = k.dataset.k; render(); }
   });
-  $('#cal-on').addEventListener('change', e => { p.on = e.target.checked; save(); render(); });
-  $('#cal-copy').addEventListener('click', () => openCopy(calDay));
+  $('#cal-on').addEventListener('change', e => { w.on = e.target.checked; save(); render(); });
+  $('#cal-copy').addEventListener('click', () => openCopy(dow(key)));
 }
 
-/** Edit one block: name, exact times, quiet-after buffer, repeat on other days, delete. */
-function openBlock(j, isNew = false) {
-  const p = S().week[calDay], b = p.blocks[j]; if (!b) return;
+/** Edit an event: name, times, repeat weekly (which days) or once, quiet-after buffer, delete. */
+function openEvent(id, isNew = false) {
+  const ev = findEvent(id); if (!ev) return;
+  const key = calDate;
+  let once = !!ev.date, after = Number(ev.after || 0);
+  const days = new Set(ev.days?.length ? ev.days : [dow(key)]);
   showModal(`
     <form id="bk" class="sheet">
-      <div class="sheet-head"><span class="pill">${DOW_LONG[calDay]}</span><span class="pill">${isNew ? 'New block' : 'Blocked time'}</span></div>
-      <input class="field big-input" id="bk-label" value="${esc(b.label)}" placeholder="What is it? e.g. Lecture" autocomplete="off">
+      <div class="sheet-head"><span class="pill">${isNew ? 'New event' : 'Event'}</span><span class="pill">${esc(repeatText(ev))}</span></div>
+      <input class="field big-input" id="bk-label" value="${esc(ev.label)}" placeholder="What is it? e.g. Lecture" autocomplete="off">
       <div class="two">
-        <label class="lbl">From<input class="field" type="time" id="bk-start" value="${b.start}"></label>
-        <label class="lbl">To<input class="field" type="time" id="bk-end" value="${b.end}"></label>
+        <label class="lbl">From<input class="field" type="time" id="bk-start" value="${ev.start}"></label>
+        <label class="lbl">To<input class="field" type="time" id="bk-end" value="${ev.end}"></label>
       </div>
+      <label class="lbl">Repeat</label>
+      <div class="seg" id="bk-rep"><button type="button" data-r="weekly" class="${once ? '' : 'sel'}">↻ Every week</button><button type="button" data-r="once" class="${once ? 'sel' : ''}">Only ${shortDate(ev.date || key)}</button></div>
+      <div class="chips" id="bk-days" ${once ? 'hidden' : ''}>${WEEK_ORDER.map(i => `<button type="button" data-d="${i}" class="${days.has(i) ? 'sel' : ''}">${DOW[i]}</button>`).join('')}</div>
       <label class="lbl">Stay quiet afterwards (travel, getting home…)</label>
-      <div class="chips" id="bk-after">${AFTER.map(m => `<button type="button" data-m="${m}" class="${m == (b.after || 0) ? 'sel' : ''}">${m ? (m < 60 ? m + ' min' : m / 60 + ' hr') : 'None'}</button>`).join('')}</div>
-      <label class="lbl">Also add on</label>
-      <div class="chips" id="bk-days">${[1, 2, 3, 4, 5, 6, 0].filter(i => i !== calDay).map(i => `<button type="button" data-d="${i}">${DOW[i]}</button>`).join('')}</div>
-      <div class="actions">
+      <div class="chips" id="bk-after">${AFTER.map(m => `<button type="button" data-m="${m}" class="${m == after ? 'sel' : ''}">${m ? (m < 60 ? m + ' min' : m / 60 + ' hr') : 'None'}</button>`).join('')}</div>
+      <div class="actions" id="bk-actions">
         <button type="button" class="ghost danger" id="bk-del">Delete</button>
         <button class="primary">Save</button>
       </div>
     </form>`, root => {
-    let after = Number(b.after || 0); const days = new Set();
-    $('#bk-label', root).focus();
-    $('#bk-after', root).addEventListener('click', e => {
+    if (isNew) $('#bk-label', root).focus();
+    const pickOne = (box, fn) => box.addEventListener('click', e => {
       const x = e.target.closest('button'); if (!x) return;
-      root.querySelectorAll('#bk-after button').forEach(y => y.classList.toggle('sel', y === x)); after = Number(x.dataset.m);
+      box.querySelectorAll('button').forEach(y => y.classList.toggle('sel', y === x)); fn(x);
     });
+    pickOne($('#bk-rep', root), x => { once = x.dataset.r === 'once'; $('#bk-days', root).hidden = once; });
+    pickOne($('#bk-after', root), x => { after = Number(x.dataset.m); });
     $('#bk-days', root).addEventListener('click', e => {
       const x = e.target.closest('button'); if (!x) return;
-      const d = Number(x.dataset.d); days.has(d) ? days.delete(d) : days.add(d); x.classList.toggle('sel');
+      const d = Number(x.dataset.d); days.has(d) ? days.delete(d) : days.add(d); x.classList.toggle('sel', days.has(d));
     });
-    $('#bk-del', root).addEventListener('click', () => { p.blocks.splice(j, 1); save(); closeModal(); render(); });
+    const remove = () => { S().events = S().events.filter(x => x.id !== ev.id); save(); closeModal(); render(); };
+    $('#bk-del', root).addEventListener('click', () => {
+      if (isNew || ev.date) return remove();
+      $('#bk-actions', root).innerHTML = `<span class="small dim grow">Delete this repeating event…</span>
+        <button type="button" class="ghost danger" id="bk-del-one">Only ${shortDate(key)}</button>
+        <button type="button" class="ghost danger" id="bk-del-all">Every week</button>`;
+      $('#bk-del-one', root).addEventListener('click', () => { (ev.skip ||= []).push(key); save(); closeModal(); render(); });
+      $('#bk-del-all', root).addEventListener('click', remove);
+    });
     $('#bk', root).addEventListener('submit', e => {
       e.preventDefault();
-      const st = $('#bk-start', root).value || b.start, en = $('#bk-end', root).value || b.end;
+      const st = $('#bk-start', root).value || ev.start, en = $('#bk-end', root).value || ev.end;
       if (toMin(en) <= toMin(st)) return alert('The end time needs to be after the start time.');
-      Object.assign(b, { label: $('#bk-label', root).value.trim(), start: st, end: en, after });
-      days.forEach(d => { const w = S().week[d]; w.blocks.push(clone(b)); w.blocks.sort((x, y) => toMin(x.start) - toMin(y.start)); });
-      p.blocks.sort((x, y) => toMin(x.start) - toMin(y.start));
+      if (!once && !days.size) return alert('Pick at least one day for it to repeat on.');
+      Object.assign(ev, { label: $('#bk-label', root).value.trim(), start: st, end: en, after });
+      if (once) { ev.date = ev.date || key; ev.days = []; } else { ev.date = null; ev.days = [...days].sort(); }
       save(); closeModal(); render();
     });
   });
@@ -671,9 +731,9 @@ function openCopy(from) {
   showModal(`
     <div class="sheet">
       <div class="sheet-head"><span class="pill">Copy ${DOW_LONG[from]}</span></div>
-      <h2>Copy ${DOW_LONG[from]}'s hours and blocks to…</h2>
-      <div class="chips big" id="cp">${[1, 2, 3, 4, 5, 6, 0].filter(i => i !== from).map(i => `<button type="button" data-d="${i}">${DOW[i]}</button>`).join('')}</div>
-      <p class="dim small">This replaces the schedule on the days you pick.</p>
+      <h2>Copy ${DOW_LONG[from]}'s hours and weekly events to…</h2>
+      <div class="chips big" id="cp">${WEEK_ORDER.filter(i => i !== from).map(i => `<button type="button" data-d="${i}">${DOW[i]}</button>`).join('')}</div>
+      <p class="dim small">This replaces the hours and weekly events on the days you pick. One-time events aren't copied.</p>
       <div class="actions"><button type="button" class="ghost" id="cp-cancel">Cancel</button><button type="button" class="primary" id="cp-go">Copy</button></div>
     </div>`, root => {
     const picked = new Set();
@@ -683,7 +743,16 @@ function openCopy(from) {
     });
     $('#cp-cancel', root).addEventListener('click', closeModal);
     $('#cp-go', root).addEventListener('click', () => {
-      picked.forEach(d => { S().week[d] = clone(S().week[from]); });
+      const src = S().week[from];
+      picked.forEach(d => {
+        Object.assign(S().week[d], { on: src.on, start: src.start, end: src.end });
+        S().events.forEach(ev => {
+          if (ev.date) return;
+          const has = ev.days.includes(from);
+          ev.days = ev.days.filter(x => x !== d); if (has) ev.days.push(d);
+        });
+      });
+      S().events = S().events.filter(ev => ev.date || ev.days.length);
       save(); closeModal(); render();
     });
   });
@@ -739,6 +808,7 @@ function bindView() {
   on('#report', 'click', openCheckin);
   on('#break', 'click', openBreak);
   on('#edit-pri', 'click', () => openStandup(true));
+  on('#set-pri', 'click', () => openStandup(true));
   on('#plan-ahead', 'click', () => openPlanAhead());
   document.querySelectorAll('.ahead [data-k]').forEach(b => b.addEventListener('click', () => openPlanAhead(b.dataset.k)));
   on('#clockout', 'click', () => {
@@ -773,7 +843,7 @@ function bindView() {
   });
   on('#s-reset', 'click', () => {
     if (!confirm('Erase all check-ins and settings? This cannot be undone.')) return;
-    state = { settings: { ...DEFAULTS, week: defaultWeek() }, days: {} }; save(); render();
+    state = { settings: { ...DEFAULTS, week: defaultWeek(), events: [] }, days: {} }; save(); render();
   });
 }
 
@@ -798,11 +868,10 @@ render();
 {
   const k = dateKey();
   if (!isWorkday(k)) speak(say(S().tone, 'off'));
-  else if (pending().length > 1) speak(say(S().tone, 'owed', { n: pending().length }), 'angry');
   else if (nextSlot() != null) speak(say(S().tone, 'idle', { next: fmt(nextSlot()) }));
 }
 tick();
 setInterval(tick, 10_000);
 setInterval(updateClock, 1000);
-if (location.search.includes('checkin')) openCheckin();
+if (location.search.includes('checkin')) pending().length ? openCheckin() : day().priorities.length || openStandup(day().standupDone);
 else if (location.search.includes('priorities')) openStandup(day().standupDone);
