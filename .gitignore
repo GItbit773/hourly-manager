@@ -1,1 +1,4 @@
 .DS_Store
+.wrangler/
+push/.wrangler/
+node_modules/

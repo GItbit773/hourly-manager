@@ -1,0 +1,15 @@
+name = "time-keeper-push"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+VAPID_SUBJECT = "https://gitbit773.github.io/hourly-manager/"
+ALLOWED_ORIGINS = "https://gitbit773.github.io,http://127.0.0.1:4180"
+
+[[kv_namespaces]]
+binding = "TK"
+id = "4daf941e25b0412f9ac4ae4d057c1551"

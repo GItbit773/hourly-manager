@@ -34,12 +34,13 @@ function load() {
       const settings = { ...DEFAULTS, ...s.settings };
       if (!Array.isArray(settings.week)) settings.week = defaultWeek(s.settings); // migrate v1 settings
       delete settings.start; delete settings.end; delete settings.workdays;
-      return { settings: migrateEvents(settings), days: s.days };
+      return { settings: migrateEvents(settings), days: s.days, push: s.push };
     }
   } catch {}
   return { settings: { ...DEFAULTS, week: defaultWeek(), events: [] }, days: {} };
 }
-function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
+function persist() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
+function save() { persist(); queuePushSync(); }
 const S = () => state.settings;
 
 /* ---------------- time helpers ---------------- */
@@ -207,6 +208,7 @@ function beep(level = 0) {
 }
 async function notify(body, level = 0, title0 = null) {
   beep(level);
+  if (state.push?.on) return; // the push server delivers notifications
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const title = title0 || `${S().managerName} wants an update` + (level >= 2 ? '!!' : '');
   const opts = { body, tag: 'checkin', renotify: true, requireInteraction: true, icon: 'icon.svg' };
@@ -221,7 +223,7 @@ async function notify(body, level = 0, title0 = null) {
 let currentKey = dateKey();
 function tick() {
   const key = dateKey();
-  if (key !== currentKey) { currentKey = key; render(); }
+  if (key !== currentKey) { currentKey = key; render(); queuePushSync(); }
   const d = day(key), now = nowMin();
   const mt = toMin(S().morning || '07:00');
   if (S().morningOn && !d.morningPinged && now >= mt && now < mt + 240) {
@@ -417,6 +419,82 @@ function downloadICS() {
   a.download = 'time-keeper-checkins.ics'; document.body.appendChild(a); a.click(); a.remove();
 }
 
+/* ---------------- push notifications (Cloudflare Worker) ---------------- */
+const PUSH_URL = 'https://time-keeper-push.gitbit773.workers.dev';
+const pushInfo = () => (state.push ||= { on: false });
+const randId = (n = 24) => btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(n)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+const canPush = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+/** Same line every time for the same moment, so unchanged schedules don't re-sync. */
+function lineAt(key, seed, vars = {}) {
+  const set = LINES[S().tone] || LINES.micro; let v = set[key] ?? LINES.micro[key];
+  if (Array.isArray(v)) v = v[Math.abs(Math.floor(seed / 60000)) % v.length];
+  return String(v).replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '');
+}
+/** Everything the server should push over the next 7 days. Re-sent whenever it changes. */
+function pushItems() {
+  const items = [], now = Date.now(), name = S().managerName;
+  const atOf = (key, min) => { const d = new Date(key + 'T00:00'); d.setMinutes(Math.round(min)); return d.getTime(); };
+  for (let i = 0; i < 7; i++) {
+    const key = addDays(dateKey(), i), d = peekDay(key);
+    if (S().morningOn) {
+      const at = atOf(key, toMin(S().morning));
+      if (at > now && !d?.priorities?.length) items.push({ at, title: "Time to set today's priorities", body: lineAt('morning', at), url: './?priorities', tag: 'morning' });
+    }
+    if (!d?.priorities?.length || !isWorkday(key)) continue;
+    for (const { t, from } of planSlots(plan(key), d.endedAt)) {
+      if ((d.priFrom != null && t <= d.priFrom) || d.entries?.[t]) continue;
+      const at = atOf(key, t), range = `from ${fmt(Math.max(from, d.priFrom ?? 0))} to ${fmt(t)}`;
+      if (at > now) items.push({ at, title: `${name} wants an update`, body: lineAt('prompt', at, { range }), url: './?checkin', tag: 'checkin' });
+      const nag = at + 15 * 60000;
+      if (nag > now && !quietAt(key, t + 15)) items.push({ at: nag, title: `${name} is still waiting`, body: lineAt('nag', nag, { range }), url: './?checkin', tag: 'checkin' });
+    }
+  }
+  return items.sort((a, b) => a.at - b.at).slice(0, 250);
+}
+let pushTimer;
+function queuePushSync() {
+  if (!state.push?.on) return;
+  clearTimeout(pushTimer); pushTimer = setTimeout(() => syncPush().catch(() => {}), 1500);
+}
+async function syncPush(force = false) {
+  const P = pushInfo(); if (!P.on || !canPush()) return;
+  const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+  if (!sub) { P.on = false; persist(); return; }
+  const items = pushItems();
+  const sig = JSON.stringify([sub.endpoint, items]);
+  if (!force && sig === P.sig) return;
+  const r = await fetch(PUSH_URL + '/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: P.id, secret: P.secret, subscription: sub.toJSON(), items }) });
+  if (!r.ok) throw new Error('Sync failed (' + r.status + ')');
+  P.sig = sig; P.synced = Date.now(); persist();
+}
+async function enablePush() {
+  if (!canPush()) throw new Error(isIOS && !isStandalone ? 'Add Time Keeper to your Home Screen first, then open it from there.' : "This browser can't receive push notifications.");
+  if (await Notification.requestPermission() !== 'granted') throw new Error('Notifications were not allowed. You can allow them in your phone or browser settings.');
+  const reg = await navigator.serviceWorker.ready;
+  const { key } = await (await fetch(PUSH_URL + '/vapid')).json();
+  const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: fromB64u(key) });
+  const P = pushInfo(); P.id ||= randId(18); P.secret ||= randId(32); P.on = true; P.sig = '';
+  persist(); await syncPush(true);
+  return sub;
+}
+async function disablePush() {
+  const P = pushInfo();
+  try { await fetch(PUSH_URL + '/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: P.id, secret: P.secret }) }); } catch {}
+  try { const reg = await navigator.serviceWorker.ready; await (await reg.pushManager.getSubscription())?.unsubscribe(); } catch {}
+  P.on = false; P.sig = ''; persist();
+}
+async function testPush() {
+  const P = pushInfo(); await syncPush(true);
+  const r = await fetch(PUSH_URL + '/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: P.id, secret: P.secret, title: `${S().managerName} says hi`, body: lineAt('idle', Date.now(), { next: 'the next check-in' }) }) });
+  const j = await r.json().catch(() => ({}));
+  if (!j.ok) throw new Error('Test push failed' + (j.status ? ' (' + j.status + ')' : ''));
+}
+async function withBusy(btn, fn) {
+  const old = btn.textContent; btn.disabled = true; btn.textContent = 'Working…';
+  try { await fn(); } catch (err) { alert(err.message || String(err)); } finally { btn.disabled = false; btn.textContent = old; render(); }
+}
+
 /* ---------------- views ---------------- */
 let tab = 'today';
 const gbDate = (key = dateKey()) => new Date(key + 'T12:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
@@ -472,10 +550,10 @@ function reportCard(key) {
 
 function viewToday() {
   const key = dateKey(), d = day(key), now = nowMin(), p = pending();
-  const notif = 'Notification' in window && Notification.permission !== 'granted'
+  const notif = !state.push?.on && 'Notification' in window && !(isIOS && !isStandalone)
     ? (Notification.permission === 'denied'
       ? `<section class="banner"><div><b>Notifications are blocked</b><p>Allow them for Time Keeper in your phone or browser settings so ${esc(S().managerName)} can reach you.</p></div></section>`
-      : `<section class="banner"><div><b>Turn on notifications</b><p>So ${esc(S().managerName)} can reach you when the app isn't on screen.</p></div><button class="btn primary sm" id="enable-notif">Enable</button></section>`) : '';
+      : `<section class="banner"><div><b>Turn on notifications</b><p>So ${esc(S().managerName)} can reach you even when the app is closed.</p></div><button class="btn primary sm" id="enable-notif">Enable</button></section>`) : '';
   const install = isIOS && !isStandalone
     ? `<section class="banner"><div><b>Install on your iPhone</b><p>In Safari tap <b>Share</b> → <b>Add to Home Screen</b>, then open it from the Home Screen.</p></div></section>` : '';
   const q = isWorkday(key) ? quietAt(key, now) : null;
@@ -533,7 +611,15 @@ function viewSettings() {
     <button type="button" class="row-item nav" id="open-schedule"><span>Weekly schedule</span><span class="row-end dim">${on} work day${on === 1 ? '' : 's'} · ${S().events.length} event${S().events.length === 1 ? '' : 's'} <b class="chev">›</b></span></button>
   </section>
   <section class="sec">
-    <p class="lbl">Phone alarms</p>
+    <p class="lbl">Push notifications</p>
+    ${state.push?.on
+      ? `<p class="dim small">On — ${esc(s.managerName)} reaches this device even when the app is closed.${state.push.synced ? ' Last synced ' + new Date(state.push.synced).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '.' : ''}</p>
+         <div class="btn-row left"><button class="btn" id="push-test">Send a test push</button><button class="btn danger" id="push-off">Turn off</button></div>`
+      : `<p class="dim small">Get check-ins and the morning reminder even when the app is closed.${isIOS && !isStandalone ? ' On iPhone, add Time Keeper to your Home Screen first and open it from there.' : ''}</p>
+         <div class="btn-row left"><button class="btn primary" id="push-on">Turn on push notifications</button></div>`}
+  </section>
+  <section class="sec">
+    <p class="lbl">Calendar alarms (backup)</p>
     <p class="dim small">iPhones pause web apps in the background, so ${esc(s.managerName)} can't nudge you while the app is closed. Add a Calendar alarm for every check-in and the morning reminder — tapping one brings you back here. Re-add them after changing your schedule.</p>
     <div class="btn-row left"><button class="btn primary" id="s-ics">Add check-ins to Calendar</button></div>
   </section>
@@ -812,7 +898,10 @@ function openPlanAhead(startKey = addDays(dateKey(), 1)) {
 function bindView() {
   bindCal();
   const on = (id, ev, fn) => $(id)?.addEventListener(ev, fn);
-  on('#enable-notif', 'click', async () => { await Notification.requestPermission(); render(); });
+  on('#enable-notif', 'click', e => withBusy(e.currentTarget, enablePush));
+  on('#push-on', 'click', e => withBusy(e.currentTarget, enablePush));
+  on('#push-test', 'click', e => withBusy(e.currentTarget, testPush));
+  on('#push-off', 'click', e => withBusy(e.currentTarget, disablePush));
   on('#report', 'click', openCheckin);
   on('#break', 'click', openBreak);
   on('#edit-pri', 'click', () => openStandup(true));
@@ -875,6 +964,7 @@ if ('serviceWorker' in navigator && !location.search.includes('nosw')) {
   navigator.serviceWorker.addEventListener('message', e => { if (e.data?.type === 'open-checkin') openCheckin(); });
 }
 render();
+queuePushSync();
 {
   const k = dateKey();
   if (!isWorkday(k)) speak(say(S().tone, 'off'));
@@ -885,3 +975,4 @@ setInterval(tick, 10_000);
 setInterval(updateClock, 1000);
 if (location.search.includes('checkin')) pending().length ? openCheckin() : day().priorities.length || openStandup(day().standupDone);
 else if (location.search.includes('priorities')) openStandup(day().standupDone);
+if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => { if (e.data?.type === 'open-priorities') openStandup(day().standupDone); });
