@@ -285,10 +285,10 @@ function openCheckin() {
     : '';
   showModal(`
     <form id="ci" class="sheet">
-      <div class="sheet-head"><span class="pill">${fmt(slotFrom(key, t))} – ${fmt(t)}</span>${p.length > 1 ? `<span class="pill red">${p.length} owed</span>` : ''}</div>
-      <h2>${esc(say(S().tone, 'prompt', { range: rangeText(key, t) }))}</h2>
-      <textarea id="ci-text" rows="4" required placeholder="e.g. Drafted the intro of the report, answered 6 emails, 20 min on Slack…"></textarea>
-      <label class="lbl">How productive was it, honestly?</label>
+      <p class="eyebrow">${fmt(slotFrom(key, t))} – ${fmt(t)}${p.length > 1 ? ` · <span class="red">${p.length} owed</span>` : ''}</p>
+      <h2 class="sheet-title">${esc(say(S().tone, 'prompt', { range: rangeText(key, t) }))}</h2>
+      <textarea id="ci-text" rows="4" required placeholder="What did you get done?"></textarea>
+      <label class="lbl">How productive was it?</label>
       <div class="rating" id="rate">${[1, 2, 3, 4, 5].map(n => `<button type="button" data-n="${n}" class="${n === 3 ? 'sel' : ''}">${n}<small>${['Wasted', 'Weak', 'Okay', 'Good', 'Crushed it'][n - 1]}</small></button>`).join('')}</div>
       ${pri}
       <div class="actions">
@@ -326,10 +326,10 @@ function openStandup(edit = false) {
   const cur = d.priorities.map(p => p.text);
   showModal(`
     <form id="su" class="sheet">
-      <div class="sheet-head"><span class="pill">Morning stand-up</span></div>
-      <h2>${esc(say(S().tone, !edit && cur.length && !d.standupDone ? 'planned' : 'standup'))}</h2>
+      <p class="eyebrow">Morning stand-up · ${gbDate()}</p>
+      <h2 class="sheet-title">${esc(say(S().tone, !edit && cur.length && !d.standupDone ? 'planned' : 'standup'))}</h2>
       <div id="su-list">${Array.from({ length: Math.max(3, cur.length) }, (_, i) => priField(i, cur[i])).join('')}</div>
-      <button type="button" class="link" id="su-add" ${cur.length >= MAX_PRIORITIES ? 'hidden' : ''}>+ Add another priority</button>
+      <button type="button" class="link add" id="su-add" ${cur.length >= MAX_PRIORITIES ? 'hidden' : ''}>+ Add another</button>
       <div class="actions">
         ${edit ? '<button type="button" class="ghost" id="su-cancel">Cancel</button>' : '<button type="button" class="ghost" id="su-skip">Skip</button>'}
         <button class="primary">Commit</button>
@@ -339,7 +339,7 @@ function openStandup(edit = false) {
     $('#su-add', root).addEventListener('click', e => {
       const list = $('#su-list', root), n = list.children.length;
       if (n >= MAX_PRIORITIES) return;
-      list.insertAdjacentHTML('beforeend', priField(n)); list.lastElementChild.focus();
+      list.insertAdjacentHTML('beforeend', priField(n)); list.lastElementChild.querySelector('input').focus();
       if (n + 1 >= MAX_PRIORITIES) e.target.hidden = true;
     });
     $('#su', root).addEventListener('submit', e => {
@@ -359,7 +359,7 @@ function openStandup(edit = false) {
 }
 
 function priField(i, v = '', firstRequired = true) {
-  return `<input class="field" name="p${i}" placeholder="Priority ${i + 1}${i >= 3 ? ' (optional)' : ''}" value="${esc(v || '')}" ${i === 0 && firstRequired ? 'required' : ''}>`;
+  return `<div class="num-field"><span>${i + 1}</span><input class="field" name="p${i}" placeholder="${i ? 'Another priority' + (i >= 3 ? ' (optional)' : '') : 'Your top priority'}" value="${esc(v || '')}" ${i === 0 && firstRequired ? 'required' : ''}></div>`;
 }
 
 function openBreak() {
@@ -419,12 +419,17 @@ function downloadICS() {
 
 /* ---------------- views ---------------- */
 let tab = 'today';
+const gbDate = (key = dateKey()) => new Date(key + 'T12:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+/** 9:00, 10:30 — compact 12h time without AM/PM, for dense lists. */
+const fmtC = m => { m = Math.round(m); const h = Math.floor(m / 60) % 24; return `${h % 12 || 12}:${pad(m % 60)}`; };
 const nextSlot = () => { const k = dateKey(); return slots(k).find(t => status(k, t) === 'upcoming'); };
 
 function render() {
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  const navTab = tab === 'schedule' ? 'settings' : tab;
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === navTab));
   $('#mgr-name').textContent = S().managerName;
-  $('#view').innerHTML = tab === 'today' ? viewToday() : tab === 'history' ? viewHistory() : viewSettings();
+  $('.role').textContent = TONES[S().tone]?.[0] || '';
+  $('#view').innerHTML = tab === 'today' ? viewToday() : tab === 'history' ? viewHistory() : tab === 'schedule' ? viewSchedule() : viewSettings();
   bindView();
   setTitle(pending().length);
   updateClock();
@@ -435,9 +440,9 @@ function timeline(key) {
   const rows = slots(key).map(t => {
     const from = slotFrom(key, t);
     const s = status(key, t), e = d.entries[t];
-    const range = `${fmt(from)} – ${fmt(t)}`;
+    const range = `${fmtC(from)}–${fmtC(t)}`;
     let body;
-    if (s === 'done') body = `<p>${esc(e.text)}</p><div class="meta"><span class="dots">${'●'.repeat(e.rating)}<i>${'●'.repeat(5 - e.rating)}</i></span>${e.priority >= 0 && d.priorities[e.priority] ? `<span class="tag">↳ ${esc(d.priorities[e.priority].text)}</span>` : ''}${e.late >= 5 ? `<span class="tag warn">${e.late}m late</span>` : ''}</div>`;
+    if (s === 'done') body = `<p>${esc(e.text)}</p><div class="meta"><span class="dots">${'●'.repeat(e.rating)}<i>${'●'.repeat(5 - e.rating)}</i></span>${e.priority >= 0 && d.priorities[e.priority] ? `<span class="tag">${esc(d.priorities[e.priority].text)}</span>` : ''}${e.late >= 5 ? `<span class="tag warn">${e.late}m late</span>` : ''}</div>`;
     else if (s === 'missed') body = `<p class="miss">Unaccounted for</p>`;
     else if (s === 'pending') body = `<p class="miss">Waiting on your report…</p>`;
     else if (s === 'break') body = `<p class="dim">Break</p>`;
@@ -445,27 +450,22 @@ function timeline(key) {
     return { at: from, html: `<li class="tl ${s}"><span class="t">${range}</span><div>${body}</div></li>` };
   });
   if (isWorkday(key)) for (const [a, b, blk, e] of quietRanges(plan(key))) {
-    rows.push({ at: a, html: `<li class="tl block"><span class="t">${fmt(a)} – ${fmt(b)}</span><div><p>${esc(blk.label || 'Blocked')}</p><div class="meta"><span class="tag">no check-ins</span>${b > e ? `<span class="tag">incl. ${b - e}m after</span>` : ''}</div></div></li>` });
+    rows.push({ at: a, html: `<li class="tl block"><span class="t">${fmtC(a)}–${fmtC(b)}</span><div><p>${esc(blk.label || 'Blocked')}</p><div class="meta"><span class="tag">no check-ins</span>${b > e ? `<span class="tag">incl. ${b - e}m after</span>` : ''}</div></div></li>` });
   }
   rows.sort((x, y) => x.at - y.at);
-  return rows.length ? `<ol class="timeline">${rows.map(r => r.html).join('')}</ol>` : '<p class="dim">No check-ins scheduled.</p>';
+  return rows.length ? `<ol class="timeline">${rows.map(r => r.html).join('')}</ol>` : '<p class="dim empty">No check-ins scheduled.</p>';
 }
 
 function reportCard(key) {
   const s = stats(key);
   if (!s.grade) return '';
-  const line = reviewLine(s.grade);
-  return `<section class="card review g-${s.grade}">
-    <div class="grade">${s.grade}</div>
-    <div class="rv">
-      <h3>Performance review</h3>
-      <p class="quote">“${esc(line)}” <span class="dim">— ${esc(S().managerName)}</span></p>
-      <div class="kpis">
-        <div><b>${s.done}/${s.counted}</b><span>hours accounted</span></div>
-        <div><b>${s.avg ? s.avg.toFixed(1) : '–'}</b><span>avg productivity</span></div>
-        <div><b>${s.done ? Math.round(s.onPri / s.done * 100) + '%' : '–'}</b><span>on priorities</span></div>
-        <div><b>${s.priTotal ? s.priDone + '/' + s.priTotal : '–'}</b><span>priorities done</span></div>
-      </div>
+  return `<section class="review g-${s.grade}">
+    <div class="rv-top"><div class="grade">${s.grade}</div><div><p class="eyebrow">Performance review</p><p class="quote">“${esc(reviewLine(s.grade))}”</p></div></div>
+    <div class="kpis">
+      <div><b>${s.done}/${s.counted}</b><span>hours accounted</span></div>
+      <div><b>${s.avg ? s.avg.toFixed(1) : '–'}</b><span>avg productivity</span></div>
+      <div><b>${s.done ? Math.round(s.onPri / s.done * 100) + '%' : '–'}</b><span>on priorities</span></div>
+      <div><b>${s.priTotal ? s.priDone + '/' + s.priTotal : '–'}</b><span>priorities done</span></div>
     </div>
   </section>`;
 }
@@ -473,70 +473,75 @@ function reportCard(key) {
 function viewToday() {
   const key = dateKey(), d = day(key), now = nowMin(), p = pending();
   const notif = 'Notification' in window && Notification.permission !== 'granted'
-    ? `<section class="card banner"><div><b>${esc(S().managerName)} can't reach you when this tab is hidden.</b><p class="dim">Turn on notifications so the hourly check-ins actually find you.</p></div>${Notification.permission === 'denied' ? '<span class="small dim">Blocked — allow notifications for this site in your browser settings.</span>' : '<button class="primary" id="enable-notif">Enable</button>'}</section>` : '';
+    ? (Notification.permission === 'denied'
+      ? `<section class="banner"><div><b>Notifications are blocked</b><p>Allow them for Time Keeper in your phone or browser settings so ${esc(S().managerName)} can reach you.</p></div></section>`
+      : `<section class="banner"><div><b>Turn on notifications</b><p>So ${esc(S().managerName)} can reach you when the app isn't on screen.</p></div><button class="btn primary sm" id="enable-notif">Enable</button></section>`) : '';
   const install = isIOS && !isStandalone
-    ? `<section class="card banner"><div><b>Install on your iPhone</b><p class="dim">In Safari tap <b>Share</b> <span aria-hidden="true">⎋</span> → <b>Add to Home Screen</b>. Then open it from the home screen and enable notifications.</p></div></section>` : '';
+    ? `<section class="banner"><div><b>Install on your iPhone</b><p>In Safari tap <b>Share</b> → <b>Add to Home Screen</b>, then open it from the Home Screen.</p></div></section>` : '';
   const q = isWorkday(key) ? quietAt(key, now) : null;
-  const quiet = q ? `<p class="quiet">🔕 ${esc(q[2].label || 'Blocked time')} — quiet until ${fmt(q[1])}</p>` : '';
-  let status;
-  if (!isWorkday(key)) status = `<p class="big">Day off</p><p class="dim">${esc(say(S().tone, 'off'))}</p>`;
-  else if (!d.priorities.length && !dayOver(key)) status = `<p class="label">No priorities yet</p><p class="big">Check-ins paused</p><p class="dim">Set today's priorities and ${esc(S().managerName)} will start checking in from then.</p><button class="primary wide" id="set-pri">Set today's priorities</button>`;
-  else if (now < dayStart(key)) status = `<p class="label">Workday starts</p><p class="big">${fmt(dayStart(key))}</p><p class="dim">${esc(say(S().tone, 'before', { start: fmt(dayStart(key)) }))}</p>`;
-  else if (p.length) status = `${quiet}<p class="label">Overdue</p><p class="big red">${p.length} report${p.length > 1 ? 's' : ''} owed</p><button class="primary wide" id="report">Report in now</button>`;
-  else if (dayOver(key)) status = `<p class="label">Clocked out</p><p class="big">See you tomorrow</p>`;
+  const quiet = q ? `<p class="quiet">🔕 ${esc(q[2].label || 'Blocked time')} · quiet until ${fmt(q[1])}</p>` : '';
+  let hero;
+  if (!isWorkday(key)) hero = `<p class="eyebrow">${gbDate()}</p><h1 class="display sm">Day off</h1><p class="dim">${esc(say(S().tone, 'off'))}</p>`;
+  else if (!d.priorities.length && !dayOver(key)) hero = `<p class="eyebrow">No priorities yet</p><h1 class="display sm">Check-ins paused</h1><p class="dim">Set today's priorities and ${esc(S().managerName)} starts checking in from then.</p><button class="btn primary wide" id="set-pri">Set today's priorities</button>`;
+  else if (now < dayStart(key)) hero = `<p class="eyebrow">Workday starts</p><h1 class="display">${fmtC(dayStart(key))}</h1><p class="dim">${esc(say(S().tone, 'before', { start: fmt(dayStart(key)) }))}</p>`;
+  else if (p.length) hero = `${quiet}<p class="eyebrow red">Overdue</p><h1 class="display sm red">${p.length} report${p.length > 1 ? 's' : ''} owed</h1><button class="btn primary wide" id="report">Report in now</button>`;
+  else if (dayOver(key)) hero = `<p class="eyebrow">Clocked out at ${fmt(d.endedAt ?? dayEnd(key))}</p><h1 class="display sm">See you tomorrow</h1>`;
   else {
     const n = nextSlot();
-    status = `${quiet}<p class="label">${n != null ? `Next check-in at ${fmt(n)}` : 'No more check-ins today'}</p><p class="big mono" id="countdown">--:--</p>
-      <div class="row"><button class="ghost" id="break">Take a break</button><button class="ghost" id="clockout">Clock out</button></div>`;
+    hero = `${quiet}<p class="eyebrow">${n != null ? `Next check-in at ${fmt(n)}` : 'No more check-ins today'}</p><h1 class="display" id="countdown">--:--</h1>
+      <div class="btn-row"><button class="btn" id="break">Take a break</button><button class="btn" id="clockout">Clock out</button></div>`;
   }
   const ahead = plannedAhead();
-  const pri = `<section class="card">
-      <div class="card-head"><h3>Today's priorities</h3><div class="hdr-btns"><button class="link" id="plan-ahead">📅 Plan ahead</button><button class="link" id="edit-pri">${d.priorities.length ? 'Edit' : 'Set'}</button></div></div>
-      ${d.priorities.length ? `<ul class="pri">${d.priorities.map((x, i) => `<li><label><input type="checkbox" data-i="${i}" ${x.done ? 'checked' : ''}><span>${esc(x.text)}</span></label></li>`).join('')}</ul>` : `<p class="dim">None set. ${esc(S().managerName)} has noticed.</p>`}
-      ${ahead.length ? `<div class="ahead"><span class="dim small">Planned ahead:</span>${ahead.slice(0, 6).map(k => `<button class="tag" data-k="${k}">${niceDate(k)} · ${state.days[k].priorities.length}</button>`).join('')}</div>` : ''}
+  const pri = `<section class="sec">
+      <div class="sec-head"><h2>Priorities</h2><div class="hdr-btns"><button class="link" id="plan-ahead">Plan ahead</button><button class="link" id="edit-pri">${d.priorities.length ? 'Edit' : 'Set'}</button></div></div>
+      ${d.priorities.length ? `<ul class="pri">${d.priorities.map((x, i) => `<li><label><input type="checkbox" class="cbx" data-i="${i}" ${x.done ? 'checked' : ''}><span>${esc(x.text)}</span></label></li>`).join('')}</ul>` : `<p class="dim empty">None set. ${esc(S().managerName)} has noticed.</p>`}
+      ${ahead.length ? `<div class="ahead"><span class="dim small">Planned ahead</span>${ahead.slice(0, 6).map(k => `<button class="tag" data-k="${k}">${gbDate(k)} · ${state.days[k].priorities.length}</button>`).join('')}</div>` : ''}
     </section>`;
   return `${install}${notif}
-    <section class="card status">${status}</section>
+    <section class="hero">${hero}</section>
     ${dayOver(key) && isWorkday(key) ? reportCard(key) : ''}
     ${pri}
-    ${isWorkday(key) ? `<section class="card"><div class="card-head"><h3>Today's log</h3><span class="dim">${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</span></div>${timeline(key)}</section>` : ''}`;
+    ${isWorkday(key) ? `<section class="sec"><div class="sec-head"><h2>Today</h2><span class="dim small">${gbDate()}</span></div>${timeline(key)}</section>` : ''}`;
 }
 
 function viewHistory() {
   const keys = Object.keys(state.days).filter(k => k < dateKey() && (isWorkday(k) || Object.keys(state.days[k].entries).length)).sort().reverse();
-  if (!keys.length) return `<section class="card"><h3>History</h3><p class="dim">No past days yet. Survive today first.</p></section>`;
+  if (!keys.length) return `<section class="sec"><div class="sec-head"><h2>History</h2></div><p class="dim empty">No past days yet. Survive today first.</p></section>`;
   const week = keys.slice(0, 7).map(k => ({ k, s: stats(k) })).reverse();
-  const bars = `<div class="bars">${week.map(({ k, s }) => `<div class="bar"><div class="fill g-${s.grade}" style="height:${Math.max(4, s.acc * 100)}%"></div><span>${new Date(k + 'T12:00').toLocaleDateString(undefined, { weekday: 'narrow' })}</span></div>`).join('')}</div>`;
-  return `<section class="card"><div class="card-head"><h3>Hours accounted</h3><span class="dim">last ${week.length} days</span></div>${bars}</section>
-    ${keys.map(k => {
+  const bars = `<div class="bars">${week.map(({ k, s }) => `<div class="bar"><div class="fill g-${s.grade}" style="height:${Math.max(4, s.acc * 100)}%"></div><span>${new Date(k + 'T12:00').toLocaleDateString('en-GB', { weekday: 'narrow' })}</span></div>`).join('')}</div>`;
+  return `<section class="sec"><div class="sec-head"><h2>Hours accounted</h2><span class="dim small">Last ${week.length} days</span></div>${bars}</section>
+    <section class="sec hlist">${keys.map(k => {
       const s = stats(k);
-      return `<details class="card day"><summary><span class="gl g-${s.grade}">${s.grade ?? '–'}</span><span class="dk"><b>${new Date(k + 'T12:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</b><small>${s.done}/${s.counted} accounted · avg ${s.avg ? s.avg.toFixed(1) : '–'}</small></span></summary>${timeline(k)}</details>`;
-    }).join('')}`;
+      return `<details class="hrow"><summary><span class="gl g-${s.grade}">${s.grade ?? '–'}</span><span class="dk"><b>${gbDate(k)}</b><small>${s.done}/${s.counted} accounted · avg ${s.avg ? s.avg.toFixed(1) : '–'}</small></span><span class="chev">›</span></summary><div class="hrow-body">${timeline(k)}</div></details>`;
+    }).join('')}</section>`;
 }
 
 function viewSettings() {
-  const s = S();
-  return `<section class="card form">
-    <h3>Your time keeper</h3>
-    <label>Name<input class="field" id="s-name" value="${esc(s.managerName)}"></label>
-    <label>Personality</label>
-    <div class="tones" id="s-tone">${Object.entries(TONES).map(([k, [name, desc]]) => `<button type="button" data-t="${k}" class="${k === s.tone ? 'sel' : ''}"><b>${name}</b><span>${desc}</span></button>`).join('')}</div>
-    <div class="tog-row"><label class="tog"><input type="checkbox" id="s-morning-on" ${s.morningOn ? 'checked' : ''}> Daily reminder to set priorities at</label><input class="field inline" type="time" id="s-morning" value="${s.morning}"></div>
-    <label class="tog"><input type="checkbox" id="s-sound" ${s.sound ? 'checked' : ''}> Chime when checking in</label>
-    <label class="tog"><input type="checkbox" id="s-voice" ${s.voice ? 'checked' : ''}> Say it out loud</label>
+  const s = S(), on = S().week.filter(w => w.on).length;
+  return `<section class="sec">
+    <label class="lbl" for="s-name">Name</label>
+    <input class="field" id="s-name" value="${esc(s.managerName)}">
   </section>
-  ${scheduleSection(s)}
-  <section class="card form">
-    <h3>Phone alarms</h3>
-    <p class="dim small">iPhones pause web apps in the background, so ${esc(s.managerName)} can't nudge you while the app is closed. Add a Calendar alarm for every check-in (and the daily priorities reminder) — tapping it brings you back here.</p>
-    <div class="row left"><button class="primary" id="s-ics">Add check-ins to Calendar</button></div>
-    <p class="dim small">Changed your schedule? Delete the old “${esc(s.managerName)}: check-in” events and add them again.</p>
+  <section class="sec">
+    <p class="lbl">Personality</p>
+    <div class="radio-list" id="s-tone">${Object.entries(TONES).map(([k, [name, desc]]) => `<button type="button" data-t="${k}" class="radio ${k === s.tone ? 'sel' : ''}"><span><b>${name}</b><small>${desc}</small></span><i aria-hidden="true"></i></button>`).join('')}</div>
   </section>
-  <section class="card form">
-    <h3>Data</h3>
-    <div class="row left"><button class="ghost" id="s-test">Test a check-in alert</button><button class="ghost" id="s-export">Export JSON</button></div>
-    <div class="row left"><button class="ghost danger" id="s-reset">Erase everything</button></div>
-    <p class="dim small">Everything stays on this device. Keep this tab (or the installed app) open during work hours — browsers can't wake a closed page.</p>
+  <section class="sec rows">
+    <div class="row-item"><span>Morning reminder</span><span class="row-end"><input type="time" class="time-plain" id="s-morning" value="${s.morning}"><input type="checkbox" class="switch" id="s-morning-on" ${s.morningOn ? 'checked' : ''} aria-label="Morning reminder"></span></div>
+    <label class="row-item"><span>Chime when checking in</span><input type="checkbox" class="switch" id="s-sound" ${s.sound ? 'checked' : ''}></label>
+    <label class="row-item"><span>Say it out loud</span><input type="checkbox" class="switch" id="s-voice" ${s.voice ? 'checked' : ''}></label>
+    <button type="button" class="row-item nav" id="open-schedule"><span>Weekly schedule</span><span class="row-end dim">${on} work day${on === 1 ? '' : 's'} · ${S().events.length} event${S().events.length === 1 ? '' : 's'} <b class="chev">›</b></span></button>
+  </section>
+  <section class="sec">
+    <p class="lbl">Phone alarms</p>
+    <p class="dim small">iPhones pause web apps in the background, so ${esc(s.managerName)} can't nudge you while the app is closed. Add a Calendar alarm for every check-in and the morning reminder — tapping one brings you back here. Re-add them after changing your schedule.</p>
+    <div class="btn-row left"><button class="btn primary" id="s-ics">Add check-ins to Calendar</button></div>
+  </section>
+  <section class="sec">
+    <p class="lbl">Data</p>
+    <div class="btn-row left"><button class="btn" id="s-test">Test a check-in alert</button><button class="btn" id="s-export">Export JSON</button></div>
+    <div class="btn-row left"><button class="btn danger" id="s-reset">Erase everything</button></div>
+    <p class="dim small">Everything stays on this device.</p>
   </section>`;
 }
 
@@ -563,25 +568,27 @@ function repeatText(e) {
 }
 const findEvent = id => S().events.find(e => e.id === id);
 
-function scheduleSection(s) {
-  const key = calDate, w = S().week[dow(key)], p = livePlan(key), sl = planSlots(p), wk = weekOf(key);
-  return `<section class="card form" id="s-week">
-    <h3>Schedule</h3>
-    <p class="dim small"><b>Tap or drag</b> on the calendar to add an event (lecture, travel…) — no check-ins happen during events. Events can <b>repeat every week</b> or happen just once. Drag to move, drag the bottom edge to resize, tap to edit. Drag the <b>Start</b> / <b>End</b> bars to set your hours.</p>
+function viewSchedule() {
+  const s = S(), key = calDate, w = S().week[dow(key)], p = livePlan(key), sl = planSlots(p), wk = weekOf(key);
+  return `<div class="subhead"><button type="button" class="back" id="back-settings" aria-label="Back to settings">‹</button><h1 class="title">Weekly schedule</h1></div>
+  <section id="s-week">
+    <p class="dim small help"><b>Tap or drag</b> to add an event (lecture, travel…) — no check-ins during events. Events repeat weekly or happen once. Drag to move, drag the bottom edge to resize, tap to edit. Drag <b>Start</b> / <b>End</b> to set your hours.</p>
     <div class="cal-nav">
-      <button type="button" class="ghost sm" data-nav="-7" aria-label="Previous week">‹</button>
+      <button type="button" class="icon-btn" data-nav="-7" aria-label="Previous week">‹</button>
       <b>${shortDate(wk[0])} – ${shortDate(wk[6])}</b>
-      <button type="button" class="ghost sm" data-nav="7" aria-label="Next week">›</button>
+      <button type="button" class="icon-btn" data-nav="7" aria-label="Next week">›</button>
       ${weekOf(dateKey())[0] !== wk[0] ? '<button type="button" class="link" data-nav="today">This week</button>' : ''}
     </div>
     <div class="wk-strip">${wk.map(k => {
       const ww = S().week[dow(k)], n = ww.on ? eventsOn(k).length : 0;
-      return `<button type="button" data-k="${k}" class="${k === key ? 'sel' : ''} ${ww.on ? '' : 'off'} ${k === dateKey() ? 'today' : ''}"><b>${DOW[dow(k)]}</b><span>${new Date(k + 'T12:00').getDate()}</span>${n ? `<i>${n}</i>` : ''}</button>`;
+      return `<button type="button" data-k="${k}" class="${k === key ? 'sel' : ''} ${ww.on ? '' : 'off'} ${k === dateKey() ? 'today' : ''}" aria-label="${niceDate(k)}"><b>${DOW[dow(k)][0]}</b><span>${new Date(k + 'T12:00').getDate()}</span><i class="${n ? 'on' : ''}"></i></button>`;
     }).join('')}</div>
-    <div class="cal-bar"><label class="tog"><input type="checkbox" id="cal-on" ${w.on ? 'checked' : ''}> Work day (every ${DOW_LONG[dow(key)]})</label><button type="button" class="link" id="cal-copy">Copy to other days…</button></div>
+    <div class="cal-bar"><label class="switch-label" title="Applies every ${DOW_LONG[dow(key)]}"><input type="checkbox" class="switch" id="cal-on" ${w.on ? 'checked' : ''}> Work day</label><button type="button" class="link" id="cal-copy">Copy to other days</button></div>
     <div class="cal" id="cal"><div class="cal-grid" id="cal-grid" style="height:${ypx(24 * 60)}px">${calInner(key)}</div></div>
-    <p class="dim small slots-preview"><b>🔔 Check-ins on ${niceDate(key)}:</b> ${p.on ? (sl.length ? sl.map(x => fmt(x.t)).join(' · ') : 'none') : 'day off'} <br>Check-ins only run once you've set priorities for the day.</p>
-    <label>Check in every<select class="field" id="s-int">${[30, 45, 60, 90, 120].map(m => `<option value="${m}" ${m == s.interval ? 'selected' : ''}>${m < 60 ? m + ' minutes' : m / 60 + ' hour' + (m > 60 ? 's' : '')}</option>`).join('')}</select></label>
+    <p class="dim small slots-preview">🔔 ${niceDate(key)}: ${p.on ? (sl.length ? sl.map(x => fmtC(x.t)).join(' · ') : 'no check-ins') : 'day off'} · only once priorities are set</p>
+  </section>
+  <section class="sec rows">
+    <label class="row-item"><span>Check in every</span><span class="row-end"><select class="select-plain" id="s-int">${[30, 45, 60, 90, 120].map(m => `<option value="${m}" ${m == s.interval ? 'selected' : ''}>${m < 60 ? m + ' minutes' : m / 60 + ' hour' + (m > 60 ? 's' : '')}</option>`).join('')}</select><b class="chev">›</b></span></label>
   </section>`;
 }
 
@@ -628,7 +635,7 @@ function bindCal() {
     } else { drag = { mode: 'tap', x: e.clientX, y: e.clientY, m }; return; } // touch: leave scrolling alone
     if (drag.mode !== 'hours' && !drag.ev) { drag = null; return; }
     Object.assign(drag, { x: e.clientX, y: e.clientY, moved: false });
-    grid.setPointerCapture(e.pointerId); e.preventDefault();
+    try { grid.setPointerCapture(e.pointerId); } catch {} e.preventDefault();
   });
   grid.addEventListener('pointermove', e => {
     if (!drag || drag.mode === 'tap') return;
@@ -663,6 +670,7 @@ function bindCal() {
   grid.addEventListener('pointercancel', finish);
 
   $('#s-week').addEventListener('click', e => {
+    if (e.target.closest('.cal')) return;
     const nav = e.target.closest('[data-nav]'), k = e.target.closest('.wk-strip [data-k]');
     if (nav) { calDate = nav.dataset.nav === 'today' ? dateKey() : addDays(calDate, Number(nav.dataset.nav)); render(); }
     else if (k) { calDate = k.dataset.k; render(); }
@@ -788,7 +796,7 @@ function openPlanAhead(startKey = addDays(dateKey(), 1)) {
       root.querySelectorAll('#pa-planned button').forEach(b => b.classList.toggle('sel', b.dataset.k === dateIn.value));
     });
     $('#pa-planned', root)?.addEventListener('click', e => { const b = e.target.closest('button'); if (b) { dateIn.value = b.dataset.k; dateIn.dispatchEvent(new Event('change')); } });
-    add.addEventListener('click', () => { list.insertAdjacentHTML('beforeend', priField(list.children.length, '', false)); list.lastElementChild.focus(); sync(); });
+    add.addEventListener('click', () => { list.insertAdjacentHTML('beforeend', priField(list.children.length, '', false)); list.lastElementChild.querySelector('input').focus(); sync(); });
     $('#pa-cancel', root).addEventListener('click', closeModal);
     $('#pa', root).addEventListener('submit', e => {
       e.preventDefault();
@@ -836,6 +844,8 @@ function bindView() {
     speak(line, 'neutral', true); notify(line, 0);
   });
   on('#s-ics', 'click', downloadICS);
+  on('#open-schedule', 'click', () => { tab = 'schedule'; calScroll = null; render(); scrollTo(0, 0); });
+  on('#back-settings', 'click', () => { tab = 'settings'; render(); scrollTo(0, 0); });
   on('#s-export', 'click', () => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' }));
