@@ -960,7 +960,18 @@ document.querySelector('.tabs').addEventListener('click', e => {
 });
 document.addEventListener('pointerdown', unlockAudio, { once: false, passive: true });
 if ('serviceWorker' in navigator && !location.search.includes('nosw')) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Pick up new versions quickly: check on launch and whenever the app comes back to the foreground,
+  // then reload once the new service worker takes over (only if a previous one was in charge).
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {});
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloaded || modal.open) return;
+    reloaded = true; location.reload();
+  });
   navigator.serviceWorker.addEventListener('message', e => { if (e.data?.type === 'open-checkin') openCheckin(); });
 }
 render();
